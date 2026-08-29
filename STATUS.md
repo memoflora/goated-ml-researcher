@@ -49,8 +49,23 @@ the reproduction is a property of the harness and not of one machine.
 - the `requirements-pipeline.txt` whitelist was read relative to the **cwd**, so running from
   anywhere but the repo root silently fell back to the default list. Now repo-root relative.
 
-Both bugs have regression tests (`test_atomic_write_survives_a_filesystem_that_refuses_directory_fsync`,
-`test_runtime_imports_stay_within_the_pinned_python_version`). Still no `requirements.txt` in
+- every text read in the tests used the **platform default encoding**. Windows defaults to
+  cp1252, so the moment a real LLM writes an em dash or an ellipsis into a hypothesis, reading
+  `journal.jsonl` back raises `UnicodeDecodeError` — on Windows only. Writing was always
+  explicit utf-8; reading now is too. **C: `report.py` reads the journal, so please pass
+  `encoding="utf-8"` on every read there as well.**
+
+All four bugs have regression tests (`test_atomic_write_survives_a_filesystem_that_refuses_directory_fsync`,
+`test_runtime_imports_stay_within_the_pinned_python_version`,
+`test_journal_round_trips_non_ascii_whatever_the_locale`, and an AST scan,
+`test_no_text_file_io_relies_on_the_platform_default_encoding`, that fails if any module reads
+or writes text without an explicit encoding).
+
+Verified on macOS + Python 3.12, and with the locale forced to ASCII (`LC_ALL=C -X utf8=0`),
+which reproduces the Windows cp1252 failure mode. **Nobody has run this on real Windows yet** —
+if your teammate is on Windows, that is the thing worth confirming. The one part I cannot check
+from here is B's sandbox: killing a whole process group needs `CREATE_NEW_PROCESS_GROUP` +
+`taskkill /T` on Windows, where `os.killpg` does not exist. Still no `requirements.txt` in
 the repo — see Requests; until B adds one: `python3.11 -m venv .venv && .venv/bin/pip install
 pytest ruff` is enough to run everything.
 
