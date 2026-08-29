@@ -298,3 +298,70 @@ Nothing in §2 changed shape. Ack by replying here.
 
 | Fault | Class | Recovered | Attempts |
 |---|---|---|---|
+
+---
+
+# Checkpoint — end of day 1 (29 Aug)
+
+Where the project actually stands. Everything below is verified, not planned.
+
+## What is merged on `main`
+
+| | Owner | State |
+|---|---|---|
+| Plan, team skill, frozen contracts | A | merged (PR #2) |
+| Idea bank v1 | D | merged (PR #1) |
+| Evaluator, splits, data card, reporter, baseline repro | C | merged (PR #3) |
+| Orchestrator loop, tree, policy, journal, resume | A | merged (PR #2) |
+
+## Open
+
+| PR | Branch | State |
+|---|---|---|
+| #5 | `feat/b-sandbox-agent` | resolved, **MERGEABLE**, 192 passed / 26 skipped |
+| #6 | `feat/d-idea-bank` | open, 126 passed |
+
+Merge **#5 first, then #6** — #6 is already rebased on main and both touch `STATUS.md`.
+
+## The numbers
+
+| | GAUC | nDCG@5 | primary |
+|---|---|---|---|
+| official baseline — validation | 0.6674 | 0.5357 | **0.6016** |
+| our reproduction — validation | 0.6671 | 0.5358 | 0.6015 |
+| BPR-FM reference (calibration) | 0.6698 | 0.5365 | **0.6032** |
+| oracle ceiling — validation | 1.0000 | 0.6968 | 0.8484 |
+
+Baseline reproduced independently on macOS (C) and Windows (D), matching to 0.0001.
+
+## What we know that most teams will not
+
+1. **The test labels are on disk.** "Hidden test" means the organisers score their own copy.
+   `evaluate.score(..., "test")` refuses without `ALLOW_TEST_SCORING=1`, so the rule is
+   mechanical rather than promised.
+2. **Features and capacity are dead ends**, measured by the organisers. The bottleneck is the
+   pointwise/ranking objective mismatch.
+3. **Ranking is within-user**, so user-side first-order terms contribute exactly zero. They
+   only pay through crosses with the item side.
+4. **Pair-sampling weight matters more than the loss function** and decides the sign of the
+   result: uniform 0.5982, positive-count-weighted 0.6032. Ours, measured.
+5. **Gains come from stacking.** One ranking-loss change captures ~0.6% of the headroom.
+
+All five are encoded in `ideas.yaml` and `prompts/system.md`, not just written down here.
+
+## Platform note
+
+Official runs are POSIX. The repo now runs on Windows too, but with two POSIX-only
+behaviours degraded and documented at `sandbox._isolation_kwargs`: no rlimit memory cap and
+no RSS polling, so a runaway child is caught by the timeout rather than the memory guard.
+Three cross-platform bugs were found and fixed along the way (directory fsync, `resource`
+import, CSV encoding) — all three were invisible on macOS.
+
+## Next
+
+- **Merge #5 and #6.** Until then no real `--mode dev` run is possible: B is the last piece.
+- **First live run.** Nothing has yet exercised a real LLM end to end. This is the H+12
+  checkpoint and it is the riskiest remaining moment.
+- **`requirements.txt`** — `pyyaml` is needed by `knowledge.py` and is still unpinned.
+- **Devpost draft, README, demo video** — D, not started. The writeup wants 4-5 hypotheses
+  quoted verbatim from a real journal, so it is gated on the first live run.
