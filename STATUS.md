@@ -106,10 +106,14 @@ Notes for whoever integrates:
 
 ## D — ML Researcher: Method, Knowledge & Story
 
-- [ ] `system.md` + `draft.md` + `improve.md` + `repair.md`
-- [x] idea bank entries: 32 / 30 (seeded on branch `feat/d-idea-bank`, retiered per starter-kit findings)
-- [ ] reference pipeline beats baseline
+- [x] `system.md` + `draft.md` + `improve.md` + `repair.md` — written to B's exact template
+      variable contract; a test asserts no prompt uses a variable `agent.py` does not supply
+- [x] idea bank entries: 32 / 30, retiered per starter-kit findings
+- [x] `knowledge.py` — module-level `retrieve()` / `dead_ends()`, wired and feeding the loop
+- [ ] reference pipeline beats baseline (H+36)
 - [ ] Devpost draft
+- now: prompts + knowledge landed, 35 D tests, 122 green overall
+- blocked on: nothing
 - now:
 - blocked on:
 
