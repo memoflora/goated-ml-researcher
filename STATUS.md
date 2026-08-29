@@ -9,9 +9,16 @@ H+60). Bullets, not prose.
 |---|---|---|---|
 | Official baseline — validation | 0.6674 | 0.5357 | **0.6016** |
 | Official baseline — hidden test | 0.6610 | 0.5282 | **0.5946** |
-| Our reproduction (C fills) | — | — | — |
+| **Our reproduction — validation** | **0.6671** | **0.5358** | **0.6015** ✅ |
+| **Our reproduction — test** | **0.6621** | **0.5286** | **0.5953** ✅ |
 | Our best autonomous run (validation) | — | — | — |
 | Attainable ceiling | 1.0000 | 0.7289 | 0.8645 |
+
+Reproduced 29 Aug on Windows / Python 3.14.2 / numpy 2.4.1, `baseline.py --model fm`, seed 0,
+82 s wall-clock (early stop at epoch 11). Validation matches published to 0.0001; test to 0.0007,
+inside the 0.0008 five-seed std. Harness self-check passed: `--model random` gives test primary
+0.4757 (published 0.4753); `--model pop` gives 0.5715 exactly. Row counts exact:
+train 1,141,112 / valid 124,909 / test 170,588.
 
 ## A — ML Engineer: Orchestrator & Run
 
@@ -32,8 +39,8 @@ H+60). Bullets, not prose.
 
 ## C — ML Researcher: Data, Metrics & Evaluation
 
-- [ ] official baseline reproduced
-- [ ] random / item-popularity rungs reproduce (0.4753 / 0.5715)
+- [x] official baseline reproduced (val 0.6015 / test 0.5953)
+- [x] random / item-popularity rungs reproduce (0.4757 / 0.5715)
 - [ ] data card under 3000 tokens
 - [ ] `report.py` → RESULTS.md + trajectory PNG
 - now:

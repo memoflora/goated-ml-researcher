@@ -16,6 +16,7 @@ optimisation, searched over a tree of solution programs.
 |---|---|---|---|
 | Official baseline — validation | 0.6674 | 0.5357 | **0.6016** |
 | Official baseline — hidden test | 0.6610 | 0.5282 | **0.5946** |
+| Our reproduction — validation ✅ | 0.6671 | 0.5358 | **0.6015** |
 | Perfect ranking (attainable ceiling) | 1.0000 | 0.7289 | **0.8645** |
 
 The ceiling is 0.8645, not 1.0 — 27.1% of hidden-test users have no positive label, so their
@@ -52,6 +53,7 @@ and is picked up automatically on clone.
 | [PLAN.md](PLAN.md) | Roles, the 72-hour schedule, standing rules, setup checklist |
 | [STATUS.md](STATUS.md) | Shared scratchpad — update before every sync |
 | [problem.md](.claude/skills/techjam-track2/references/problem.md) | Problem statement digest, scoring rubric, constraints |
+| [starter-kit-findings.md](.claude/skills/techjam-track2/references/starter-kit-findings.md) | Verified baseline reproduction, measured dead ends, where the headroom is |
 | [contracts.md](.claude/skills/techjam-track2/references/contracts.md) | Architecture, module layout, frozen interfaces, journal schema |
 | [roles.md](.claude/skills/techjam-track2/references/roles.md) | All four roles: build order, acceptance tests, traps |
 

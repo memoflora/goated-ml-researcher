@@ -23,9 +23,11 @@ No role given? Ask which one. Never guess.
 **On invocation, read in this order:**
 
 1. `references/problem.md` — what we are scored on. Non-negotiable.
-2. `references/contracts.md` — architecture and the frozen interfaces.
-3. `references/roles.md` — find **your section**; skim the other three so you know the seams.
-4. `STATUS.md` and `PLAN.md` at repo root — what has landed, and which checkpoint is next.
+2. `references/starter-kit-findings.md` — measured dead ends and the organisers' ranked list of
+   where the headroom is. **Read before writing any idea, prompt, or pipeline.**
+3. `references/contracts.md` — architecture and the frozen interfaces.
+4. `references/roles.md` — find **your section**; skim the other three so you know the seams.
+5. `STATUS.md` and `PLAN.md` at repo root — what has landed, and which checkpoint is next.
 
 Then work. The project is already planned; plan *your next task* only.
 
@@ -67,7 +69,8 @@ Ownership is **per file**, not per directory. B owns prompt plumbing; **D owns p
 6. **Log every human touch** in `runs/<id>/interventions.md` during official runs. The count is
    directly scored. Treat a manual fix as a bug in the agent, and fix the agent instead.
 7. **Token discipline.** LLM spend is scored. No fan-out, no full history, no 200k prompts.
-8. **Train + validation only.** Never touch the hidden test set during development.
+8. **Train + validation only.** The test labels are on disk and nothing stops you reading them —
+   see `starter-kit-findings.md`. We enforce this rule ourselves; the environment does not.
 9. **No external training data.** KuaiRand only. This is the one disqualifying rule.
 10. **Small commits, push often, rebase on `main`.** Branch: `feat/<letter>-<topic>`.
 
@@ -83,5 +86,7 @@ Ownership is **per file**, not per directory. B owns prompt plumbing; **D owns p
 ## Reference files
 
 - `references/problem.md` — problem statement digest, scoring rubric, constraints, key numbers
+- `references/starter-kit-findings.md` — verified baseline reproduction, measured dead ends, and
+  the organisers' ranked list of unexplored directions
 - `references/contracts.md` — architecture, module layout, frozen interfaces, journal schema
 - `references/roles.md` — all four roles: scope, build order, acceptance tests, traps
