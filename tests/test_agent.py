@@ -2,6 +2,7 @@
 output, and the retry/repair behaviour that keeps a six-hour run alive."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,14 @@ import pytest
 
 from orchestrator import agent as agent_mod
 from orchestrator.agent import Agent, AgentError, StubClient, Usage
-from orchestrator.contracts import Budget, Context, ExecResult, HistoryEntry, Idea, Node, TaskSpec
+from orchestrator.contracts import (
+    PIPELINE_CLI, Budget, Context, ExecResult, HistoryEntry, Idea, Node, TaskSpec,
+)
+
+_needs_openai = pytest.mark.skipif(
+    importlib.util.find_spec("openai") is None,
+    reason="optional provider; `pip install openai` to run these",
+)
 
 TASK = TaskSpec(
     name="kuairand-pure", data_dir=Path("data"), metrics=("gauc", "ndcg@5"),
@@ -98,10 +106,11 @@ def ctx():
         ideas=[Idea(id="T1.user-ctr-prior", tier=1, title="Smoothed user CTR prior",
                     summary="Add a Bayesian-smoothed per-user CTR feature.",
                     citation="Chapelle 2014", est_minutes=10, prerequisites=[])],
-        history=[HistoryEntry(iteration=1, kind="draft", hypothesis="FM baseline",
-                              status="ok", primary=0.6016, delta_primary=0.0)],
+        history=[HistoryEntry(iteration=1, node_id="n000", kind="draft", hypothesis="FM baseline",
+                              status="ok", primary=0.6016, delta_vs_baseline=0.0)],
         budget=Budget(iters_left=42, seconds_left=18000, tokens_left=400_000),
         library_whitelist=("numpy", "scipy"), run_id="r-test", iteration=2,
+        pipeline_cli=PIPELINE_CLI, baseline_val=TASK.baseline_val,
     )
 
 
@@ -142,9 +151,9 @@ class TestPromptAssembly:
         assert "0.8645" in text                             # the real ceiling
 
     def test_history_carries_hypotheses_but_never_code(self, ctx):
-        ctx.history.append(HistoryEntry(iteration=2, kind="improve",
+        ctx.history.append(HistoryEntry(iteration=2, node_id="n001", kind="improve",
                                         hypothesis="Add a recency feature",
-                                        status="ok", primary=0.61, delta_primary=0.0084))
+                                        status="ok", primary=0.61, delta_vs_baseline=0.0084))
         a = Agent(FakeClient([]))
         ctx.parent_code = "SECRET_MARKER_PARENT_CODE = 1\n"
         a.improve(ctx, node())
@@ -154,14 +163,15 @@ class TestPromptAssembly:
             "only the parent's code may appear, never history code"
 
     def test_failed_history_entries_report_their_error_class(self, ctx):
-        ctx.history = [HistoryEntry(iteration=1, kind="draft", hypothesis="try FM",
+        ctx.history = [HistoryEntry(iteration=1, node_id="n000", kind="draft", hypothesis="try FM",
+                             primary=None, delta_vs_baseline=None,
                                     status="buggy", error_class="import")]
         a = Agent(FakeClient([]))
         a.draft(ctx)
         assert "failed (import)" in a.client.calls[0]["messages"][0]["content"]
 
     def test_d_prompt_files_win_over_the_fallbacks(self, ctx, tmp_path):
-        (tmp_path / "draft.md").write_text("REAL DRAFT PROMPT for $run_id, iter $iteration")
+        (tmp_path / "draft.md").write_text("REAL DRAFT PROMPT for $run_id, iter $iteration", encoding="utf-8")
         a = Agent(FakeClient([]), prompt_dir=tmp_path)
         a.draft(ctx)
         user = a.client.calls[0]["messages"][0]["content"]
@@ -170,7 +180,7 @@ class TestPromptAssembly:
 
     def test_unknown_template_variables_are_left_alone(self, ctx, tmp_path):
         """safe_substitute, so a typo in D's prompt cannot crash a run at hour four."""
-        (tmp_path / "draft.md").write_text("$run_id and $not_a_variable")
+        (tmp_path / "draft.md").write_text("$run_id and $not_a_variable", encoding="utf-8")
         a = Agent(FakeClient([]), prompt_dir=tmp_path)
         a.draft(ctx)
         assert a.client.calls[0]["messages"][0]["content"] == "r-test and $not_a_variable"
@@ -310,7 +320,7 @@ class TestRepair:
     def failed_node(self, tmp_path, **kw):
         ws = tmp_path / "n002"
         ws.mkdir()
-        (ws / "pipeline.py").write_text("BROKEN_CODE_MARKER = (\n")
+        (ws / "pipeline.py").write_text("BROKEN_CODE_MARKER = (\n", encoding="utf-8")
         result = ExecResult(
             ok=False, exit_code=1, stdout_tail="training\n", stderr_tail="...",
             error_class="syntax", error_excerpt="SyntaxError: '(' was never closed",
@@ -383,8 +393,8 @@ class TestStubClient:
         ws.mkdir()
         data = tmp_path / "data"
         data.mkdir()
-        (data / "val.csv").write_text("user_id,video_id\nu1,v1\nu1,v2\nu2,v1\n")
-        (ws / "pipeline.py").write_text(Agent(StubClient()).draft(ctx).code)
+        (data / "val.csv").write_text("user_id,video_id\nu1,v1\nu1,v2\nu2,v1\n", encoding="utf-8")
+        (ws / "pipeline.py").write_text(Agent(StubClient()).draft(ctx).code, encoding="utf-8")
         r = sandbox.run(node(workspace=ws), split="val", seed=0, timeout_s=30,
                         data_dir=data, mem_limit_mb=1024)
         assert r.ok, (r.error_class, r.error_excerpt)
@@ -439,6 +449,7 @@ def openai_agent(script):
     return Agent(OpenAIClient(sdk), model="test-model"), sdk
 
 
+@_needs_openai
 class TestOpenAIAdapter:
     def ok_completion(self, **usage_kw):
         return FakeOpenAICompletion(
@@ -521,6 +532,7 @@ class TestOpenAIAdapter:
         assert len(sdk.calls) == 2
 
 
+@_needs_openai
 class TestProviderSelection:
     def test_anthropic_key_wins_when_both_are_present(self, monkeypatch):
         monkeypatch.delenv("TECHJAM_LLM", raising=False)
@@ -576,7 +588,7 @@ class TestDotenv:
             "# a comment\n\n"
             "OPENAI_API_KEY=sk-proj-from-file\n"
             'export TECHJAM_MODEL="some-model"\n'
-            "ALREADY_SET=from-file\n")
+            "ALREADY_SET=from-file\n", encoding="utf-8")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("TECHJAM_MODEL", raising=False)
         monkeypatch.setenv("ALREADY_SET", "from-shell")
@@ -590,12 +602,13 @@ class TestDotenv:
 
     def test_malformed_lines_are_skipped(self, tmp_path, monkeypatch):
         env = tmp_path / ".env"
-        env.write_text("no equals sign here\nGOOD_ONE=yes\n")
+        env.write_text("no equals sign here\nGOOD_ONE=yes\n", encoding="utf-8")
         monkeypatch.delenv("GOOD_ONE", raising=False)
         agent_mod.load_dotenv(env)
         assert os.environ["GOOD_ONE"] == "yes"
 
 
+@_needs_openai
 class TestKeyShape:
     def test_openai_key_under_the_anthropic_variable_is_caught(self, monkeypatch):
         """Exactly the mistake that costs an hour: right key, wrong variable."""

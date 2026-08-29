@@ -1,0 +1,55 @@
+"""Canned pipeline emitted by the StubAgent. Self-contained, no imports from us.
+
+Honours the frozen CLI:
+    python pipeline.py --data-dir DIR --out-dir DIR --split {val,test} --seed N [--subsample F]
+
+It does not train anything. It writes a schema-valid submission.csv with
+deterministic pseudo-scores so the orchestrator, the sandbox and the validator
+can all be exercised end to end without the real dataset.
+"""
+
+import argparse
+import json
+import random
+import time
+from pathlib import Path
+
+VARIANT = "__VARIANT__"
+N_ROWS = __N_ROWS__
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data-dir", required=True)
+    ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--split", choices=["val", "test"], required=True)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--subsample", type=float, default=None)
+    args = ap.parse_args()
+
+    t0 = time.time()
+    rng = random.Random(args.seed)
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    n = N_ROWS if args.subsample is None else max(10, int(N_ROWS * args.subsample))
+    with (out / "submission.csv").open("w", encoding="utf-8") as fh:
+        fh.write("row_id,user_id,video_id,score\n")
+        for row_id in range(n):
+            fh.write(f"{row_id},{row_id % 97},{row_id % 313},{rng.random():.6f}\n")
+
+    print(
+        "RESULT_JSON "
+        + json.dumps(
+            {
+                "n_rows": n,
+                "train_seconds": round(time.time() - t0, 3),
+                "notes": f"stub pipeline variant={VARIANT} split={args.split} seed={args.seed}",
+            }
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

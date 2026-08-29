@@ -11,6 +11,8 @@ runs/*
 *.npy
 *.npz
 *.zip
+*.tar.gz
+KuaiRand-Pure/
 *.csv
 !tests/fixtures/*.csv
 

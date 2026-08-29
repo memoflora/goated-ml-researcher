@@ -274,24 +274,44 @@ Three files, plus a system prompt. Keep them in markdown so C and A can read the
 
 ### Second task, rolling — the idea bank
 
-`ideas.yaml`, entries matching the `Idea` shape in `contracts.md`. Target **30–50 entries with
-real citations**. Tiers:
+`orchestrator/ideas.yaml`, entries matching the `Idea` shape in `contracts.md`. **Seeded with 32
+entries and 3 dead ends — extend it, do not restart it.**
 
-- **T0 — baseline mastery.** FM hyperparameters (k, lr, epochs, L2), feature hashing, negative
-  handling, early stopping on validation, seed averaging.
-- **T1 — feature engineering.** Smoothed user/item CTR priors, impression and recency counts,
-  time-of-day and day-of-week, duration buckets, user × category crosses, out-of-fold target
-  encoding.
-- **T2 — stronger models.** LightGBM/XGBoost on engineered features; DeepFM; DCN-v2; xDeepFM;
-  Wide & Deep. Blending a GBDT with an embedding model is historically the strongest cheap win
-  on tabular CTR data.
-- **T3 — recsys structure.** Multi-task over the 12 feedback signals (MMoE, PLE) with
-  `long_view` as the scored head; user behaviour sequences with DIN-style attention; embedding
-  pretraining on the training log only.
-- **T4 — advanced.** Duration-bias correction via censored watch-time regression (CWM, KDD 2024,
-  https://github.com/hyz20/CWM — needs torch==1.6.0 and ships no Recall implementation, so port
-  the idea, not the repo); ranking losses aligned to nDCG; calibration; ensembling across seeds
-  and model families.
+The tiering follows the organisers' own ranked list of untested directions
+(`starter-kit-findings.md`), which **inverts the obvious instinct**. Read that file before adding
+anything.
+
+- **T0 — baseline parity and hygiene.** Reproduce FM, early-stop on validation *primary* not
+  logloss, seed-average before believing a gain, L2 and LR schedule, item-popularity prior.
+- **T1 — objective alignment.** *The organisers' #1 pick and our highest expected payoff.*
+  Training is pointwise logloss; the metric is a within-user ranking metric. BPR pairwise,
+  listwise softmax over each user's impressions, lambda-weighted pairs, hard negatives,
+  within-user centering, margin loss, pointwise/pairwise blends.
+- **T2 — user history sequences.** *Organisers' #2, and currently a total blank* — the baseline
+  uses no behaviour sequence at all despite hundreds of interactions per user. Mean-pooled
+  history, DIN target attention, recency weighting, user × author affinity, short/long split, GRU.
+- **T3 — multi-task and watch time.** *Organisers' #3 and #4.* Auxiliary heads on the other
+  feedback signals, `play_time_ms` regression, MMoE, PLE, CWM censored watch-time regression,
+  duration-conditional debiasing.
+- **T4 — architecture, time, ensembling.** *Organisers' #5–#7. Deliberately last.* DeepFM,
+  DCN-v2, LightGBM on crosses, rank ensembling, time crosses, recency-weighted training,
+  unbiased validation against the random-exposure log, per-user calibration.
+
+**Why architecture is last:** the organisers measured embedding capacity flat (k = 8/16/32 →
+0.5895/0.5902/0.5887) and extra static features neutral (0.5940 vs 0.5950). Most teams will
+reach for DeepFM on day one. It is the least promising of the five open directions.
+
+### The dead-ends list
+
+`ideas.yaml` also carries a `dead_ends` block — claims that are *measured false*, each with the
+number that refutes it. B injects these into every prompt as "do not propose these, and why".
+Negative knowledge is worth as much as positive here: each entry saves an iteration spent
+rediscovering a published result. Add to it whenever one of our own runs kills an idea.
+
+The sharpest one is structural: **ranking is within-user, so user-side first-order terms
+contribute exactly zero** — measured, `item_pop × user_bias` scores identically to plain
+`item_pop`. Any idea that adds a user-side feature without an item-side cross is a wasted
+iteration. Check every new entry against this before adding it.
 
 Every summary must be **actionable in one iteration** — 2 to 4 sentences an LLM can turn into
 code without further research. "Use MMoE" is useless. "Add a shared bottom of two dense layers
@@ -329,7 +349,10 @@ Teams that start writing at H+60 submit worse projects than they built.
 
 ### Done when
 
-- [ ] Idea bank has 30+ entries; every T2+ entry carries a citation
+- [x] Idea bank has 30+ entries (32 seeded) with a `dead_ends` block
+- [ ] Every entry derived from a specific published method carries a citation. Common-practice
+      entries (recency weighting, rank ensembling, per-user calibration) legitimately have none —
+      leave `citation: null` rather than inventing one
 - [ ] Every prompt demands a non-empty `hypothesis` that states *why* before *what*
 - [ ] `improve.md` reliably produces one focused change, not a grab-bag
 - [ ] Reference pipeline beats the baseline on validation

@@ -45,10 +45,14 @@ class TestClassify:
         assert classify(-9, "", kill_reason="memory") == "oom"
 
     def test_sigkill_without_traceback_reads_as_oom(self):
+        if not hasattr(signal, "SIGKILL"):
+            pytest.skip("SIGKILL is POSIX-only; Windows never delivers it")
         assert classify(-signal.SIGKILL, "") == "oom"
         assert classify(137, "") == "oom"
 
     def test_traceback_beats_bare_sigkill(self):
+        if not hasattr(signal, "SIGKILL"):
+            pytest.skip("SIGKILL is POSIX-only; Windows never delivers it")
         assert classify(-signal.SIGKILL, TB) == "runtime"
 
     def test_clean_exit_is_unknown_not_runtime(self):
@@ -114,7 +118,7 @@ class TestParseResultJson:
 class TestCheckSubmission:
     def write(self, tmp_path, text):
         p = tmp_path / "submission.csv"
-        p.write_text(text)
+        p.write_text(text, encoding="utf-8")
         return p
 
     def test_valid(self, tmp_path):

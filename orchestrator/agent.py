@@ -679,8 +679,8 @@ def _fmt_history(ctx: Context) -> str:
     for h in ctx.history:
         if h.primary is not None:
             outcome = f"primary {h.primary:.4f}"
-            if h.delta_primary is not None:
-                outcome += f" ({h.delta_primary:+.4f} vs baseline)"
+            if h.delta_vs_baseline is not None:
+                outcome += f" ({h.delta_vs_baseline:+.4f} vs baseline)"
         else:
             outcome = f"failed ({h.error_class or h.status})"
         out.append(f"- i{h.iteration} [{h.kind}] {outcome} — {_clip(h.hypothesis, 220)}")

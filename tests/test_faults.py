@@ -60,6 +60,13 @@ class TestHappyPath:
         assert not (node.workspace / "submission.csv").exists()
 
 
+_posix_only = pytest.mark.skipif(
+    os.name == "nt",
+    reason="needs POSIX process groups and rlimits; the sandbox degrades to the "
+           "process-tree kill on Windows and official runs are POSIX",
+)
+
+
 class TestFaultTable:
     """One test per row of the fault table. Each asserts the class the repair loop
     keys on, and that the excerpt is small enough to put in a prompt."""
@@ -97,6 +104,7 @@ class TestFaultTable:
         assert time.monotonic() - started < 20      # killed promptly, not waited out
         assert "training" in r.stdout_tail          # partial output still captured
 
+    @_posix_only
     def test_timeout_kills_the_whole_process_group(self, make_node, data_dir):
         """An orphaned grandchild would eat a core for the rest of a six-hour run."""
         node = make_node("orphan_spawner.py")
@@ -109,6 +117,7 @@ class TestFaultTable:
             time.sleep(0.1)
         assert not alive(pid), f"grandchild {pid} outlived its process group"
 
+    @_posix_only
     def test_memory_hog_is_killed_and_classified_oom(self, make_node, data_dir):
         r = sandbox.run(make_node("memory_hog.py"), split="val", seed=0,
                         timeout_s=60, mem_limit_mb=384, data_dir=data_dir)
@@ -238,11 +247,17 @@ def drive_repairs(node, agent, ctx, data_dir, max_attempts=None):
 def repair_ctx():
     from pathlib import Path as _Path
 
-    from orchestrator.contracts import Context, TaskSpec
+    from orchestrator.contracts import PIPELINE_CLI, Budget, Context, TaskSpec
     task = TaskSpec(name="kuairand-pure", data_dir=_Path("data"),
                     metrics=("gauc", "ndcg@5"),
                     baseline_val={"primary": 0.6016}, baseline_test={"primary": 0.5946})
-    return Context(task=task, data_card="tiny", run_id="r-repair", iteration=1)
+    return Context(
+        task=task, data_card="tiny", run_id="r-repair", iteration=1,
+        ideas=[], history=[],
+        budget=Budget(iters_left=10, seconds_left=600, tokens_left=100_000),
+        library_whitelist=["numpy"], pipeline_cli=PIPELINE_CLI,
+        baseline_val=task.baseline_val,
+    )
 
 
 class TestRepairLoop:

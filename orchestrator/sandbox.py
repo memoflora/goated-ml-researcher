@@ -24,7 +24,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import resource
+try:
+    import resource  # POSIX only; absent on Windows
+except ImportError:  # pragma: no cover - platform dependent
+    resource = None  # type: ignore[assignment]
 import shutil
 import signal
 import subprocess
@@ -40,6 +43,7 @@ TAIL_CHARS = 4000
 EXCERPT_CHARS = 1500
 RESULT_PREFIX = "RESULT_JSON"
 SUBMISSION_HEADER = "row_id,user_id,video_id,score"
+_SIGKILL = getattr(signal, "SIGKILL", 9)  # Windows has no SIGKILL; keep the POSIX value
 TERM_GRACE_S = 3.0
 _TIME_POLL_S = 0.2
 _RSS_POLL_S = 1.0
@@ -129,8 +133,7 @@ def run(node: Node, *, split: str, seed: int,
             cmd, cwd=str(ws), stdout=out_fh, stderr=err_fh,
             stdin=subprocess.DEVNULL,           # never prompt for input
             env=_child_env(ws, seed, allow_network),
-            start_new_session=True,             # its own process group, so we can killpg
-            preexec_fn=_rlimits(mem_limit_mb),  # noqa: PLW1509 - posix only, by design
+            **_isolation_kwargs(mem_limit_mb),  # own process group + rlimits where supported
         )
         kill_reason, peak_rss_mb = _supervise(proc, timeout_s, mem_limit_mb, started)
     wall_s = time.monotonic() - started
@@ -151,7 +154,7 @@ def classify(exit_code: int, stderr: str, stdout: str = "",
 
     blob = f"{stderr}\n{stdout}"
     # The child dying on SIGKILL with no traceback is the OS OOM killer.
-    if exit_code in (-signal.SIGKILL, 137) and not _has_traceback(stderr):
+    if exit_code in (-_SIGKILL, 137) and not _has_traceback(stderr):
         return "oom"
     if re.search(r"\bMemoryError\b|Cannot allocate memory|std::bad_alloc|"
                  r"Unable to allocate .* for an array|numpy\.core\._exceptions\._ArrayMemoryError",
@@ -229,8 +232,8 @@ def check_submission(path: Path, *, expected_rows: int | None = None
     """
     if not path.is_file():
         return "contract", "pipeline exited 0 but wrote no submission.csv"
-    with open(path, newline="") as fh:
-        header = fh.readline().strip().lstrip("﻿")
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        header = fh.readline().strip()
         if header != SUBMISSION_HEADER:
             return "contract", f"submission header is {header!r}, expected {SUBMISSION_HEADER!r}"
         n_rows = 0
@@ -323,6 +326,15 @@ def _supervise(proc: subprocess.Popen, timeout_s: float, mem_limit_mb: int,
 def _kill_group(proc: subprocess.Popen) -> None:
     """SIGTERM the group, then SIGKILL it. Leaving orphans behind is a failure mode
     of its own: they eat the machine for the rest of a six-hour run."""
+    if os.name == "nt":  # pragma: no cover - platform dependent
+        # No process groups to signal; taskkill /T walks the child tree for us.
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                       capture_output=True, check=False)
+        try:
+            proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            pass
+        return
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
@@ -346,7 +358,13 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 def _group_rss_mb(pid: int) -> float:
     """Summed RSS of the child's process group, in MB. `ps` keeps this dependency
-    free; it is polled once a second, so the cost is irrelevant."""
+    free; it is polled once a second, so the cost is irrelevant.
+
+    POSIX only. Windows has neither process groups nor `ps`, so it reports 0.0 and the
+    memory cap is not enforced there - see `_isolation_kwargs`. Official runs are POSIX.
+    """
+    if os.name == "nt" or not hasattr(os, "getpgid"):  # pragma: no cover - platform
+        return 0.0
     try:
         pgid = os.getpgid(pid)
     except ProcessLookupError:
@@ -368,10 +386,25 @@ def _group_rss_mb(pid: int) -> float:
     return total_kb / 1024.0
 
 
+def _isolation_kwargs(mem_limit_mb: int) -> dict:
+    """Put the child in its own process group so the whole tree can be killed, and cap
+    its memory where the platform allows it.
+
+    POSIX gets both. Windows has no `resource` module and no `preexec_fn`, so it gets the
+    process group only (via CREATE_NEW_PROCESS_GROUP) and relies on the 1s RSS poller for
+    the memory cap - one backstop instead of two. That is a real difference: a child that
+    allocates a huge block between two samples will be caught a second later rather than
+    immediately. Official runs are POSIX; this keeps the suite runnable on Windows.
+    """
+    if os.name == "nt":  # pragma: no cover - platform dependent
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True, "preexec_fn": _rlimits(mem_limit_mb)}
+
+
 def _rlimits(mem_limit_mb: int):
     """Hard backstop under our own poller: the child gets MemoryError rather than
     swapping the machine to death between two 1s samples."""
-    if not mem_limit_mb:
+    if not mem_limit_mb or resource is None:
         return None
 
     def apply() -> None:                                    # pragma: no cover - child
