@@ -167,6 +167,21 @@ Cross-team asks. Format: `A -> C: need X because Y`.
   fields beyond the §5 schema — `reason` (why the policy moved where it did), `context_chars`,
   `repair_attempt`, `split`, `seeds_averaged`, `components`. All additive; nothing was removed.
   The run summary is also written to `runs/<id>/summary.json` if that is easier than the journal.
+- `A -> C`: **`report.py` cannot generate `RESULTS.md` on Windows.** `read_journal()` at
+  `report.py:58` does `with open(path) as fh:`, which decodes with the platform default —
+  cp1252 on Windows. The moment the agent writes a hypothesis containing an em dash or an
+  ellipsis (a real LLM does this constantly) that raises `UnicodeDecodeError`, and `RESULTS.md`
+  is a graded deliverable. `render_results` writing it back at `report.py:292` has the mirror
+  problem (`UnicodeEncodeError`). Please add `encoding="utf-8"` to every text read and write.
+  Full list from an AST scan: `datacard.py:55,151`, `evaluate.py:75`, `report.py:58,292`,
+  `test_evaluator.py:36`, `test_report.py:61,71,92,101,118,121`. Reproduce it on macOS with
+  `LC_ALL=C python -X utf8=0 -m pytest`. `journal.py` already writes and reads utf-8
+  explicitly, so the journal on disk is correct — it is only the readers that break.
+- `A -> B`: once C's files are clean, the encoding gate belongs in `make check` repo-wide.
+  `tests/test_core.py::test_no_text_file_io_relies_on_the_platform_default_encoding` is the
+  AST scan, currently scoped to A's files so it cannot redden anyone else's build. Widen the
+  `owned` list when you wire CI.
+
 - `A -> D`: `knowledge.retrieve(tried=..., best_metrics=..., budget_left=..., k=5)` is called
   once per iteration and **must not raise** — if it does, the loop journals it and continues
   with zero ideas rather than dying. `budget_left` is iterations remaining, not tokens.
