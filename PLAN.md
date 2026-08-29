@@ -1,93 +1,152 @@
 # TechJam 2026 Track 2 — Team Plan
 
 **Track:** Autonomous ML Research Agent for Recommender Systems (KuaiRand-Pure)
-**Window:** 29 Aug 12:00 SGT → 1 Sep 12:00 SGT (72 h)
-**Team:** 4 people, each driving Claude Code
+**Window:** 29 Aug 12:00 SGT → 1 Sep 12:00 SGT (72 h). H+0 = 29 Aug 12:00.
+**Team:** 2 ML engineers + 2 ML researchers, each driving Claude Code
 
 ## What we are building
 
-An **autonomous ML research agent**. Given the KuaiRand-Pure dataset and a metric, an LLM-driven
-orchestrator writes its own pipeline code, trains it, scores it, reflects on the result, revises,
-and repeats — up to 50 iterations or 6 hours — with as close to zero human intervention as we can
-manage. Architecturally it is AIDE-style (arXiv:2502.13138): treat ML engineering as code
-optimisation and search over a tree of solution programs.
+An **autonomous ML research agent**. Given KuaiRand-Pure and a metric, an LLM-driven
+orchestrator writes its own pipeline code, trains it, scores it, reflects, revises, and repeats
+— up to 50 iterations or 6 hours, with as close to zero human intervention as we can manage.
+Architecturally AIDE-like (arXiv:2502.13138): treat ML engineering as code optimisation and
+search over a tree of solution programs.
 
-The number to beat: official baseline **validation primary 0.6016**, hidden-test **0.5946**.
-The attainable ceiling is **0.8645**, not 1.0 — 27% of users have no positive label.
-
-## How we are scored, and who owns each score
-
-| Criterion | Owner |
-|---|---|
-| Primary metric (hidden-test delta over baseline) | C (ideas) + A (search) |
-| Robustness (how failures are handled) | B (repair loop) + A (routing) |
-| Innovation & Problem Insight (what it tried, and why) | C (cited idea bank) + B (hypothesis prompts) |
-| Autonomy (number of manual interventions) | everyone |
-| Feasibility (tokens + wall-clock) | B (prompts) + D (accounting) |
-| Presentation | D |
+Beat: official baseline **validation primary 0.6016** (hidden test 0.5946).
+Ceiling: **0.8645**, not 1.0 — 27% of users have no positive label.
 
 ## The four roles
 
-| | Role | Owns | The thing that must not fail |
+The engineers build the machine; the researchers decide what it thinks about. **Each person
+owns exactly one judged criterion**, so contribution is equal and legible.
+
+| | Person | Owns files | Owns the score for |
 |---|---|---|---|
-| **A** | Orchestrator & Search | loop, solution tree, convergence, budget, checkpoint/resume, search policy | a 50-iteration run finishing unattended |
-| **B** | Agent Runtime & Sandbox | Claude API client, prompts, code emission, sandboxed execution, error classification, repair loop | every injected fault recovers with no human |
-| **C** | ML Core & Knowledge | baseline reproduction, evaluator, data card, idea bank, feature cache | the baseline reproduces and the metrics are exact |
-| **D** | Telemetry & Reporting | journal, accounting, dashboard, RESULTS.md, packaging, Devpost, video | a valid submission exists from H+60 onward |
+| **A** | ML Engineer — Orchestrator & Run | `contracts.py` `core.py` `policy.py` `journal.py` `run.py` | **Autonomy** |
+| **B** | ML Engineer — Agent Runtime & Sandbox | `agent.py` `sandbox.py` `Makefile` `.github/` | **Robustness + Feasibility** |
+| **C** | ML Researcher — Data, Metrics & Evaluation | `evaluate.py` `datacard.py` `report.py` `data/` | **Primary metric** |
+| **D** | ML Researcher — Method, Knowledge & Story | `ideas.yaml` `knowledge.py` `prompts/` `reference/` `docs/` | **Innovation + Presentation** |
 
-Full scope, acceptance tests and traps per role are in
-`.claude/skills/techjam-track2/references/roles/`.
+Ownership is **per file**, not per directory. B owns the prompt plumbing; **D owns the prompt
+text**. The two pairs meet at exactly two seams — C's data card and D's ideas feed B's agent
+through `Context`; C's evaluator feeds A's loop — and both are frozen in `contracts.md`, so all
+four work at once from hour zero.
 
-## How the four of you work in parallel
+Full scope, build order, acceptance tests and traps:
+[`references/roles.md`](.claude/skills/techjam-track2/references/roles.md).
 
-Each person opens Claude Code in this repo and starts every session with:
+## How you work
+
+Open Claude Code in this repo and start every session with your letter:
 
 ```
-/techjam-track2 A
+/techjam-track2 C
 ```
 
-(substituting their role letter). The skill loads the problem digest, the frozen contracts,
-their own scope, and the current checkpoint. Nobody re-plans; everybody plans their next task.
+The skill loads the problem digest, the frozen contracts, your section of the role file, and the
+current checkpoint. Nobody re-plans the project; everybody plans their next task.
 
-Three rules make the parallelism work:
+Three rules make four parallel agents compose:
 
-1. **Frozen contracts by H+2.** A writes `orchestrator/contracts.py` and the stubs in the first
-   two hours. Everyone else codes against those shapes, stubbing whatever does not exist yet.
-2. **Strict directory ownership.** You edit only what your role file lists. Cross-team requests
-   go in `STATUS.md`, not into someone else's module.
-3. **`make check` stays green.** Lint + unit tests + a 3-iteration smoke run with a stubbed LLM,
-   under 60 seconds. Red `main` is the team's top priority.
+1. **Contracts frozen at H+2.** A ships `contracts.py`, `journal.py` and the stubs first.
+   Everyone else codes against those shapes and stubs what does not exist yet.
+2. **Strict file ownership.** Cross-team asks go in `STATUS.md`, never into someone else's file.
+3. **`make check` stays green** — lint + tests + a 3-iteration smoke run, under 60 s.
 
-## Schedule at a glance
+---
 
-| Checkpoint | What must be true |
+# Schedule
+
+## Phase 0 — Foundations (H+0 → H+6)
+
+Everyone can run something end to end, and the contracts are frozen.
+
+| | By H+6 |
 |---|---|
-| **H+2** | Contracts frozen |
-| **H+6** | Baseline reproduced (0.6016); everyone's piece runs against stubs |
-| **H+12** | First agent-written `pipeline.py` runs and gets scored |
-| **H+24** | 8-iteration unattended run produces a scored submission. **Tag it.** |
-| **H+36** | Validation primary > 0.6016 from a fully autonomous run |
-| **H+42** | First full 50-iteration / 6 h official run completes |
-| **H+48** | Official run #2 launched — nobody touches it |
-| **H+60** | **Complete valid submission on Devpost.** Non-negotiable. |
-| **H+70** | Code freeze. Buffer only after this. |
-| **H+72** | Deadline. No late submissions. |
+| A | `contracts.py` + `journal.py` + stubs done by **H+2**. Loop skeleton runs 3 stub iterations and writes a valid journal. |
+| B | Sandbox runs an arbitrary `pipeline.py` with timeout and capture. One Claude call returns a parsed `Proposal`. |
+| C | Starter kit unpacked, data downloaded, **official baseline reproduced** (val primary ≈ 0.6016), `score()` matches published numbers. |
+| D | `system.md` + `draft.md` written. Idea bank T0–T1 started. Repo README skeleton. |
 
-Detail, including the sleep rota and the scope-cut order, is in
-`.claude/skills/techjam-track2/references/timeline.md`.
+**H+2 (hard):** contracts frozen. If they are not, everything after this slips.
+**H+6 sync:** everyone demos their piece against stubs. Any blocked dependency becomes a stub.
 
-## Setup checklist before H+0
+## Phase 1 — First autonomous run (H+6 → H+24)
 
-- [ ] All four registered on **both** the Registration Form and Devpost (both are required)
-- [ ] GitHub repo created, all four with push access, this directory pushed
-- [ ] `kuairand-starter-kit.zip` downloaded from the Lark doc (Section 2.4)
-- [ ] KuaiRand-Pure data downloaded from https://kuairand.com
-- [ ] `ANTHROPIC_API_KEY` in each person's environment — never committed
-- [ ] Python 3.11 + venv on the machine that will host the official runs
-- [ ] Group chat for the H+6 / H+12 / H+24 / H+36 / H+42 / H+48 / H+60 syncs
+An unattended run that writes real pipelines, scores them, and logs it all.
+
+| | By H+24 |
+|---|---|
+| A | Real loop: tree, greedy improve, debug-first, convergence, budget guard, `--resume`, accounting. |
+| B | Real code emission, repair loop with error classification, token accounting, `make check` in CI. |
+| C | Data card done, submission validator wired in, subsample + feature cache for fast iteration. |
+| D | `improve.md` + `repair.md` tuned, idea bank T0–T2 populated, `retrieve()` working, Devpost draft started. |
+
+**H+12:** first agent-written `pipeline.py` that runs and scores, even if worse than baseline.
+Riskiest moment of the weekend — if it slips, cut scope, not this.
+**H+24 (hard):** `dev` mode completes 8 iterations unattended and produces a scored submission.
+**Tag the commit.** From here we always have something submittable.
+
+## Phase 2 — Make it good (H+24 → H+42)
+
+Beat the baseline on validation, and survive 50 iterations without a human.
+
+| | Focus |
+|---|---|
+| A | Explore/exploit policy, anti-stall rules, dead-node routing, anti-overfit selection, seed-averaged final scoring. |
+| B | Prompt caching, context trimming, and the fault-injection suite: syntax error, infinite loop, OOM, missing file, NaN scores, wrong schema — each must recover with zero human input. |
+| C | `report.py` generating RESULTS.md + trajectory PNG. Faster training loop. Validator on every scored node. |
+| D | Idea bank T3–T4 with citations. Hand-written reference pipeline that beats the baseline — calibration, so we know whether the agent or the dataset is the bottleneck. |
+
+**H+36:** validation primary > 0.6016 from a fully autonomous run.
+**H+42 (hard):** first full `official` run (50 iterations / 6 h) launched and finishing without
+intervention. Whatever it scores, we now know our real cost and duration.
+
+## Phase 3 — The scored run (H+42 → H+60)
+
+- H+42 → H+48: read run #1's journal together. Fix the top three failure modes. **Add no
+  features** — only remove reasons the agent got stuck.
+- H+48: launch **official run #2**. Nobody touches it. Every intervention is logged and costs us.
+- In parallel: C+D attempt KuaiRand-1k as bonus *only if* Pure already beats the baseline.
+- H+54: run #2 converges. Retrain the validation-best node with `--split test`, validate the CSV,
+  freeze `final/submission.csv`.
+
+**H+60 (hard, non-negotiable):** a complete valid submission on Devpost — repo, run logs,
+submission CSV, results table, resource summary, description. Improvable after this, but from
+H+60 we are never in a state where we would submit nothing.
+
+## Phase 4 — Land it (H+60 → H+72)
+
+- H+60 → H+66: demo video (3 min: the loop running, the journal, the trajectory chart, the
+  numbers). Devpost final. README reproduction check on a clean clone.
+- H+66 → H+70: a third official run only if strictly better and finished by H+70.
+- H+70 → H+72: buffer, final Devpost edit. **Nothing new starts.**
+
+---
+
+## Standing rules
+
+- **Syncs at H+6, H+12, H+24, H+36, H+42, H+48, H+60.** 15 minutes, `STATUS.md` updated first.
+- **Sleep is scheduled.** Suggested: A+C sleep H+14→H+21, B+D sleep H+21→H+28, so someone is
+  always awake to watch a run. A tired team writes the bugs that cost the intervention count.
+- **Never leave `main` red.**
+- **The intervention counter is sacred.** During official runs, ask in the group chat before
+  touching the machine, and log it in `runs/<id>/interventions.md`.
+- **Cut scope in this order** when behind: bonus benchmarks → search sophistication → idea bank
+  depth → report polish. Never cut: the end-to-end loop, the journal, the submission validator,
+  the resource accounting.
+
+## Setup before H+0
+
+- [ ] All four registered on **both** the Registration Form and Devpost — both are required
+- [ ] All four have push access to this repo
+- [ ] `kuairand-starter-kit.zip` from the Lark doc §2.4
+- [ ] KuaiRand-Pure data from https://kuairand.com
+- [ ] `ANTHROPIC_API_KEY` in each environment — never committed
+- [ ] Python 3.11 + venv on the machine hosting the official runs
+- [ ] Group chat for the syncs
 
 ## The two rules that can lose us everything
 
-1. **No external training data.** KuaiRand only. This is the single disqualifying rule.
-2. **Nothing after H+60 may leave us without a submittable project.** From H+60 we always have
-   a complete, valid Devpost entry; everything later is an improvement on top of it.
+1. **No external training data.** KuaiRand only. The single disqualifying rule.
+2. **Nothing after H+60 leaves us without a submittable project.**

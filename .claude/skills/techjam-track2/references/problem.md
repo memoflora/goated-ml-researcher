@@ -132,11 +132,11 @@ public solutions or pretrained weights, changes to any pipeline stage — not ju
 
 | Criterion | What it measures | Where it is won in our repo |
 |---|---|---|
-| **Technical Execution — Primary metric** | Equal-weighted mean of each metric's *absolute improvement* over the official baseline, on hidden test. KuaiRand-Pure = 100%. | Role C's idea bank + Role A's search policy |
-| **Technical Execution — Robustness** | Not failure count — how the agent *handles* a failed step: recover, retry, route around. Long runs must not crash, stall or diverge. | Role B's repair loop + Role A's dead-node routing |
-| **Innovation & Problem Insight** | What the agent chose to target across the *full* stack and **why**. Originality in drawing on published methods; beyond naive baseline tweaks. Judged on the choice, not the implementation. | Role C's cited idea bank + the `hypothesis` field on every journal entry |
-| **Impact & Relevance — Autonomy** | How much of the loop the agent drives itself. Measured primarily by **number of manual interventions**. Fewer is higher; fully autonomous scores highest. | Everyone. Every manual fix is a bug in the agent. |
-| **Feasibility & Practicality — Resource** | Total input+output tokens and agent wall-clock to reach convergence. Graded in three coarse tiers, and **only scored among submissions that beat the baseline on hidden test**. | Role B's prompt/caching discipline + Role D's accounting |
+| **Technical Execution — Primary metric** | Equal-weighted mean of each metric's *absolute improvement* over the official baseline, on hidden test. KuaiRand-Pure = 100%. | **C** (correct, fast measurement) + **D** (the ideas) + **A** (search policy) |
+| **Technical Execution — Robustness** | Not failure count — how the agent *handles* a failed step: recover, retry, route around. Long runs must not crash, stall or diverge. | **B** (repair loop) + **A** (dead-node routing) |
+| **Innovation & Problem Insight** | What the agent chose to target across the *full* stack and **why**. Originality in drawing on published methods; beyond naive baseline tweaks. Judged on the choice, not the implementation. | **D** (cited idea bank + prompts demanding a `hypothesis`) |
+| **Impact & Relevance — Autonomy** | How much of the loop the agent drives itself. Measured primarily by **number of manual interventions**. Fewer is higher; fully autonomous scores highest. | **A** (unattended runs, resume) — but every manual fix is everyone's bug |
+| **Feasibility & Practicality — Resource** | Total input+output tokens and agent wall-clock to reach convergence. Graded in three coarse tiers, and **only scored among submissions that beat the baseline on hidden test**. | **B** (prompt and caching discipline) + **A** (accounting) |
 
 Note the gate on the last row: **beat the baseline first, then be cheap.** An agent that
 stops after three iterations to look cheap scores worst.
