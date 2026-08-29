@@ -1,20 +1,20 @@
 # Starter kit findings — read before writing any idea or prompt
 
-The starter kit ships a README (in Chinese) with far more than the Lark doc. It names dead ends
+The starter kit ships a README (in Chinese, vendored at `vendor/starter_kit/README.md`) with far more than the Lark doc. It names dead ends
 the organisers already measured and ranks the directions they left open. Ignoring it wastes
 iterations on things known not to work. Everything here is verified against a local run.
 
 ## Setup that works (verified 29 Aug)
 
 ```bash
-cd starter-kit/kuairand-starter-kit
+cd data
 curl -sL -o KuaiRand-Pure.tar.gz https://zenodo.org/records/10439422/files/KuaiRand-Pure.tar.gz
-tar xzf KuaiRand-Pure.tar.gz          # -> ./KuaiRand-Pure/data  (195 MB, gitignored)
-python baseline.py --model fm         # also: --model pop, --model random
+tar xzf KuaiRand-Pure.tar.gz   # -> data/KuaiRand-Pure/data  (195 MB, gitignored)
+python vendor/starter_kit/baseline.py --model fm   # also: --model pop, --model random
 ```
 
 Needs Python 3.9+ and numpy, nothing else. Ran fine on Windows / Python 3.14.2 / numpy 2.4.1.
-`--data_dir` defaults to `./KuaiRand-Pure/data`.
+The kit is vendored at `vendor/starter_kit/` and is the **sole metric authority** - never reimplement the conventions. `orchestrator/splits.py` reads `data/KuaiRand-Pure/data` by default.
 
 ## Reproduction — all three rungs match
 
@@ -94,8 +94,8 @@ They have *not* tested these. This is the priority order D's idea bank should fo
    on whether a model only fits biased traffic.
 
 This ordering inverts a natural instinct — most teams will reach for DeepFM first. It is
-explicitly the least promising of the five. Tier the idea bank accordingly: losses and sequences
-are T1, architecture swaps are T3.
+explicitly the least promising of the five. The idea bank is tiered accordingly:
+losses are T1, sequences T2, multi-task and watch-time T3, architecture swaps T4.
 
 ## Files in the kit
 
