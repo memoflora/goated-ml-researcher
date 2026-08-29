@@ -414,3 +414,55 @@ def test_two_runs_in_the_same_minute_never_share_a_directory(tmp_path):
     third = new_run_id(now, runs_dir=tmp_path)
     assert first == "r20260830-0412"
     assert len({first, second, third}) == 3
+
+
+def test_atomic_write_survives_a_filesystem_that_refuses_directory_fsync(tmp_path, monkeypatch):
+    """Windows cannot open a directory as a fd, and some filesystems refuse it.
+
+    os.replace is already atomic everywhere; the directory fsync is a POSIX
+    durability bonus and must never be able to fail a checkpoint.
+    """
+    from orchestrator import core
+
+    real_open = os.open
+
+    def refusing_open(path, flags, *args, **kwargs):
+        if flags == os.O_RDONLY and Path(path).is_dir():
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(core.os, "open", refusing_open)
+    target = tmp_path / "state.json"
+    atomic_write(target, '{"iteration": 7}')
+    assert json.loads(target.read_text())["iteration"] == 7
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_runtime_imports_stay_within_the_pinned_python_version(tmp_path):
+    """`typing.Self` is 3.11+. Importing it at runtime broke a teammate's setup.
+
+    Type-checker-only imports under `if TYPE_CHECKING:` are fine; runtime ones
+    are not, because they fail at import time and take the whole run with them.
+    """
+    import ast
+
+    offenders = []
+    for path in sorted(Path(REPO_ROOT / "orchestrator").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        guarded = {
+            id(child)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and "TYPE_CHECKING" in ast.dump(node.test)
+            for child in ast.walk(node)
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "typing":
+                if id(node) in guarded:
+                    continue
+                offenders += [
+                    f"{path.name}: {alias.name}"
+                    for alias in node.names
+                    if alias.name in {"Self", "Never", "LiteralString", "TypeVarTuple"}
+                ]
+    assert not offenders, f"3.11+ typing names imported at runtime: {offenders}"

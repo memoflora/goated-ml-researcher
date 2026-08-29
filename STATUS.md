@@ -31,8 +31,28 @@ the reproduction is a property of the harness and not of one machine.
 - [x] loop, tree, convergence, budget guard, accounting, final submission step
 - [x] `kill -9` then `--resume` verified (`tests/test_core.py`, SIGKILLs a real child process)
 - [x] 49 tests green, ruff clean, 3-iteration smoke run in **0.06 s**
+- [x] portability: runs on Linux / Windows / macOS, Python 3.10+ (was accidentally 3.11+ and
+      POSIX-only — see below)
 - now: waiting on the real seams to land, then switching `--agent/--sandbox/--evaluator` off stub
 - blocked on: nothing
+
+**If the repo would not even import for you, that was my bug and it is fixed:**
+
+- `journal.py` imported `typing.Self`, which is **Python 3.11+**. On 3.10 it raised
+  `ImportError` at import time and took every module with it. Now imported under
+  `if TYPE_CHECKING:`, so it never runs. `orchestrator/__init__.py` also prints a clear
+  message instead of a traceback if your interpreter is older than 3.10.
+- `atomic_write` fsynced the containing directory, which **Windows cannot do** — you cannot
+  open a directory as a fd there, so every checkpoint raised `PermissionError` and the run
+  died on iteration 1. The fsync is a POSIX durability bonus on top of `os.replace`, which is
+  already atomic everywhere, so it is now best-effort.
+- the `requirements-pipeline.txt` whitelist was read relative to the **cwd**, so running from
+  anywhere but the repo root silently fell back to the default list. Now repo-root relative.
+
+Both bugs have regression tests (`test_atomic_write_survives_a_filesystem_that_refuses_directory_fsync`,
+`test_runtime_imports_stay_within_the_pinned_python_version`). Still no `requirements.txt` in
+the repo — see Requests; until B adds one: `python3.11 -m venv .venv && .venv/bin/pip install
+pytest ruff` is enough to run everything.
 
 **Run it — works today, entirely on stubs, no dataset needed:**
 
