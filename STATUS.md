@@ -31,8 +31,43 @@ the reproduction is a property of the harness and not of one machine.
 - [x] loop, tree, convergence, budget guard, accounting, final submission step
 - [x] `kill -9` then `--resume` verified (`tests/test_core.py`, SIGKILLs a real child process)
 - [x] 49 tests green, ruff clean, 3-iteration smoke run in **0.06 s**
+- [x] portability: runs on Linux / Windows / macOS, Python 3.10+ (was accidentally 3.11+ and
+      POSIX-only — see below)
 - now: waiting on the real seams to land, then switching `--agent/--sandbox/--evaluator` off stub
 - blocked on: nothing
+
+**If the repo would not even import for you, that was my bug and it is fixed:**
+
+- `journal.py` imported `typing.Self`, which is **Python 3.11+**. On 3.10 it raised
+  `ImportError` at import time and took every module with it. Now imported under
+  `if TYPE_CHECKING:`, so it never runs. `orchestrator/__init__.py` also prints a clear
+  message instead of a traceback if your interpreter is older than 3.10.
+- `atomic_write` fsynced the containing directory, which **Windows cannot do** — you cannot
+  open a directory as a fd there, so every checkpoint raised `PermissionError` and the run
+  died on iteration 1. The fsync is a POSIX durability bonus on top of `os.replace`, which is
+  already atomic everywhere, so it is now best-effort.
+- the `requirements-pipeline.txt` whitelist was read relative to the **cwd**, so running from
+  anywhere but the repo root silently fell back to the default list. Now repo-root relative.
+
+- every text read in the tests used the **platform default encoding**. Windows defaults to
+  cp1252, so the moment a real LLM writes an em dash or an ellipsis into a hypothesis, reading
+  `journal.jsonl` back raises `UnicodeDecodeError` — on Windows only. Writing was always
+  explicit utf-8; reading now is too. **C: `report.py` reads the journal, so please pass
+  `encoding="utf-8"` on every read there as well.**
+
+All four bugs have regression tests (`test_atomic_write_survives_a_filesystem_that_refuses_directory_fsync`,
+`test_runtime_imports_stay_within_the_pinned_python_version`,
+`test_journal_round_trips_non_ascii_whatever_the_locale`, and an AST scan,
+`test_no_text_file_io_relies_on_the_platform_default_encoding`, that fails if any module reads
+or writes text without an explicit encoding).
+
+Verified on macOS + Python 3.12, and with the locale forced to ASCII (`LC_ALL=C -X utf8=0`),
+which reproduces the Windows cp1252 failure mode. **Nobody has run this on real Windows yet** —
+if your teammate is on Windows, that is the thing worth confirming. The one part I cannot check
+from here is B's sandbox: killing a whole process group needs `CREATE_NEW_PROCESS_GROUP` +
+`taskkill /T` on Windows, where `os.killpg` does not exist. Still no `requirements.txt` in
+the repo — see Requests; until B adds one: `python3.11 -m venv .venv && .venv/bin/pip install
+pytest ruff` is enough to run everything.
 
 **Run it — works today, entirely on stubs, no dataset needed:**
 
@@ -162,6 +197,21 @@ Cross-team asks. Format: `A -> C: need X because Y`.
   fields beyond the §5 schema — `reason` (why the policy moved where it did), `context_chars`,
   `repair_attempt`, `split`, `seeds_averaged`, `components`. All additive; nothing was removed.
   The run summary is also written to `runs/<id>/summary.json` if that is easier than the journal.
+- `A -> C`: **`report.py` cannot generate `RESULTS.md` on Windows.** `read_journal()` at
+  `report.py:58` does `with open(path) as fh:`, which decodes with the platform default —
+  cp1252 on Windows. The moment the agent writes a hypothesis containing an em dash or an
+  ellipsis (a real LLM does this constantly) that raises `UnicodeDecodeError`, and `RESULTS.md`
+  is a graded deliverable. `render_results` writing it back at `report.py:292` has the mirror
+  problem (`UnicodeEncodeError`). Please add `encoding="utf-8"` to every text read and write.
+  Full list from an AST scan: `datacard.py:55,151`, `evaluate.py:75`, `report.py:58,292`,
+  `test_evaluator.py:36`, `test_report.py:61,71,92,101,118,121`. Reproduce it on macOS with
+  `LC_ALL=C python -X utf8=0 -m pytest`. `journal.py` already writes and reads utf-8
+  explicitly, so the journal on disk is correct — it is only the readers that break.
+- `A -> B`: once C's files are clean, the encoding gate belongs in `make check` repo-wide.
+  `tests/test_core.py::test_no_text_file_io_relies_on_the_platform_default_encoding` is the
+  AST scan, currently scoped to A's files so it cannot redden anyone else's build. Widen the
+  `owned` list when you wire CI.
+
 - `A -> D`: `knowledge.retrieve(tried=..., best_metrics=..., budget_left=..., k=5)` is called
   once per iteration and **must not raise** — if it does, the loop journals it and continues
   with zero ideas rather than dying. `budget_left` is iterations remaining, not tokens.
