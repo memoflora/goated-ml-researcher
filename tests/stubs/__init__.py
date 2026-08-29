@@ -11,4 +11,4 @@ from tests.stubs.evaluator import StubEvaluator
 from tests.stubs.executor import StubExecutor
 from tests.stubs.task import stub_task
 
-__all__ = ["StubAgent", "StubExecutor", "StubEvaluator", "stub_task"]
+__all__ = ["StubAgent", "StubEvaluator", "StubExecutor", "stub_task"]

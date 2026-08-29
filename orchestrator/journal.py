@@ -13,13 +13,15 @@ Public API is `emit(event: dict) -> None` (contracts.md §3).
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
+from collections.abc import Iterator
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Self
 
 #: Field order in every written line. Readers do not care; humans diffing do.
 _FIELD_ORDER = (
@@ -63,7 +65,7 @@ def _scrub(value: Any, _depth: int = 0) -> Any:
         return value
     if isinstance(value, float):
         # NaN/Inf are not valid JSON.
-        return value if value == value and abs(value) != float("inf") else None
+        return value if math.isfinite(value) else None
     if isinstance(value, str):
         out = _KEY_RE.sub(_REDACTED, value)
         live = os.environ.get("ANTHROPIC_API_KEY")
@@ -123,7 +125,7 @@ class Journal:
                 os.fsync(self._fh.fileno())
                 self._fh.close()
 
-    def __enter__(self) -> "Journal":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:
