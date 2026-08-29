@@ -316,6 +316,43 @@ def repair_exhausted(node: Node) -> bool:
 # clients
 # --------------------------------------------------------------------------- #
 
+def load_dotenv(path: Path | None = None) -> None:
+    """Read `.env` into the environment without overriding what is already set.
+
+    Fifteen lines instead of a dependency. `.env` is gitignored, and `sandbox.py`
+    strips every key-shaped variable out of the child environment, so a generated
+    pipeline never sees one.
+    """
+    path = Path(path) if path else Path(__file__).resolve().parent.parent / ".env"
+    if not path.is_file():
+        return
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        line = line.removeprefix("export ").strip()
+        name, sep, value = line.partition("=")
+        name = name.strip()
+        if sep and name and name not in os.environ:
+            os.environ[name] = value.strip().strip('"').strip("'")
+
+
+# A key pasted under the wrong variable is a 401 four hours into a run, or worse a
+# key sent to the wrong vendor. Both are cheap to catch here.
+_KEY_SHAPES = {"anthropic": ("sk-ant-",), "openai": ("sk-proj-", "sk-")}
+
+
+def _check_key_shape(provider: str, key: str) -> None:
+    if provider == "anthropic" and key.startswith("sk-proj-"):
+        raise AgentError(
+            "ANTHROPIC_API_KEY holds what looks like an OpenAI key (sk-proj-...). "
+            "Set OPENAI_API_KEY instead, or TECHJAM_LLM=openai.")
+    if provider == "openai" and key.startswith("sk-ant-"):
+        raise AgentError(
+            "OPENAI_API_KEY holds what looks like an Anthropic key (sk-ant-...). "
+            "Set ANTHROPIC_API_KEY instead, or TECHJAM_LLM=anthropic.")
+
+
 def make_client(*, api_key: str | None = None, provider: str | None = None):
     """Return an LLM client. Provider order: explicit argument, then TECHJAM_LLM,
     then whichever key is in the environment.
@@ -325,6 +362,7 @@ def make_client(*, api_key: str | None = None, provider: str | None = None):
     live, which is also our fallback if one of them starts rate-limiting us
     halfway through the scored run.
     """
+    load_dotenv()
     choice = (provider or os.environ.get("TECHJAM_LLM") or "").lower()
     if choice == "stub":
         return StubClient()
@@ -342,12 +380,14 @@ def make_client(*, api_key: str | None = None, provider: str | None = None):
         key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not key:
             raise AgentError("TECHJAM_LLM=anthropic but ANTHROPIC_API_KEY is not set.")
+        _check_key_shape("anthropic", key)
         import anthropic
         return anthropic.Anthropic(api_key=key, max_retries=0)  # we own the retry policy
     if choice == "openai":
         key = api_key or os.environ.get("OPENAI_API_KEY")
         if not key:
             raise AgentError("TECHJAM_LLM=openai but OPENAI_API_KEY is not set.")
+        _check_key_shape("openai", key)
         import openai
         return OpenAIClient(openai.OpenAI(api_key=key, max_retries=0))
     raise AgentError(f"unknown provider {choice!r}; expected anthropic, openai or stub")
@@ -358,6 +398,7 @@ def default_model_for(client) -> str:
     if isinstance(client, StubClient):
         return "stub"
     if isinstance(client, OpenAIClient):
+        load_dotenv()
         model = os.environ.get("TECHJAM_MODEL")
         if not model:
             raise AgentError(

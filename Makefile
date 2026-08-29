@@ -11,7 +11,7 @@ RUN     ?=
 DATA    ?= data
 
 .DEFAULT_GOAL := help
-.PHONY: help venv install lint fmt test smoke check dev official report clean clean-procs
+.PHONY: help venv install lint fmt test smoke check dev official report models clean clean-procs
 
 help:  ## show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -54,6 +54,9 @@ dev:  ## 8 iterations, subsampled, real LLM
 
 official:  ## the scored run: 50 iterations / 6 h, unattended
 	@$(PY) -m orchestrator.run --task kuairand-pure --mode official
+
+models:  ## list model ids the configured key can reach
+	@$(BIN)/python -m orchestrator.models || $(PY) -m orchestrator.models
 
 report:  ## regenerate RESULTS.md + trajectory PNG from a run's journal
 	@test -n "$(RUN)" || (echo "usage: make report RUN=<run_id>"; exit 1)

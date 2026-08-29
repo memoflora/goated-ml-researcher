@@ -3,6 +3,7 @@ output, and the retry/repair behaviour that keeps a six-hour run alive."""
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -555,3 +556,50 @@ class TestProviderSelection:
     def test_anthropic_default_needs_no_configuration(self, monkeypatch):
         monkeypatch.delenv("TECHJAM_MODEL", raising=False)
         assert agent_mod.default_model_for(FakeClient([])) == agent_mod.DEFAULT_MODEL
+
+
+class TestDotenv:
+    def test_reads_keys_without_overriding_the_environment(self, tmp_path, monkeypatch):
+        env = tmp_path / ".env"
+        env.write_text(
+            "# a comment\n\n"
+            "OPENAI_API_KEY=sk-proj-from-file\n"
+            'export TECHJAM_MODEL="some-model"\n'
+            "ALREADY_SET=from-file\n")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("TECHJAM_MODEL", raising=False)
+        monkeypatch.setenv("ALREADY_SET", "from-shell")
+        agent_mod.load_dotenv(env)
+        assert os.environ["OPENAI_API_KEY"] == "sk-proj-from-file"
+        assert os.environ["TECHJAM_MODEL"] == "some-model"
+        assert os.environ["ALREADY_SET"] == "from-shell", "the shell wins over .env"
+
+    def test_missing_file_is_not_an_error(self, tmp_path):
+        agent_mod.load_dotenv(tmp_path / "nope.env")   # must not raise
+
+    def test_malformed_lines_are_skipped(self, tmp_path, monkeypatch):
+        env = tmp_path / ".env"
+        env.write_text("no equals sign here\nGOOD_ONE=yes\n")
+        monkeypatch.delenv("GOOD_ONE", raising=False)
+        agent_mod.load_dotenv(env)
+        assert os.environ["GOOD_ONE"] == "yes"
+
+
+class TestKeyShape:
+    def test_openai_key_under_the_anthropic_variable_is_caught(self, monkeypatch):
+        """Exactly the mistake that costs an hour: right key, wrong variable."""
+        monkeypatch.setenv("TECHJAM_LLM", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-proj-abcdefghijklmnop")
+        with pytest.raises(AgentError, match="looks like an OpenAI key"):
+            agent_mod.make_client()
+
+    def test_anthropic_key_under_the_openai_variable_is_caught(self, monkeypatch):
+        monkeypatch.setenv("TECHJAM_LLM", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-ant-abcdefghijklmnop")
+        with pytest.raises(AgentError, match="looks like an Anthropic key"):
+            agent_mod.make_client()
+
+    def test_a_correctly_placed_key_passes(self, monkeypatch):
+        monkeypatch.setenv("TECHJAM_LLM", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-abcdefghijklmnop")
+        assert isinstance(agent_mod.make_client(), agent_mod.OpenAIClient)

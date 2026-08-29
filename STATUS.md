@@ -35,9 +35,26 @@ H+60). Bullets, not prose.
   the frozen signature still holds.
 - [x] provider-agnostic client: Anthropic (default) + OpenAI adapter + stub, chosen
   by which key is present. See `## Contract change proposed` — needs one ack.
-- next: real-API shakedown — still blocked, we have no *valid* key on the box. Then
+- [x] `.env` loading, key-shape guard, `make models`
+- **Decision taken: we run on OpenAI.** No Anthropic key is available to the team.
+  Anthropic stays supported and stays the code default; `TECHJAM_LLM=openai` in `.env`
+  selects the provider for our runs. Contract change below still needs one ack.
+- next: real-API shakedown — blocked only on a *valid* key reaching `.env`. Then
   prompt-cache hit rate measured against the API's own usage numbers, and token cap
   enforcement in `Context`.
+
+**Everyone: how to configure your box.** `.env` at the repo root, gitignored, never
+committed. Nothing else reads a key.
+
+```
+TECHJAM_LLM=openai
+OPENAI_API_KEY=sk-proj-...
+TECHJAM_MODEL=<pick one from `make models`>
+```
+
+`make models` lists what your key can actually reach and prints ids only, never the
+key. `TECHJAM_MODEL` is mandatory on OpenAI — see the contract note. `make check` and
+`make smoke` need none of this: they run stubbed, with no key and no spend.
 - blocked on: nothing. A's `run.py` gates the real `make smoke` (it currently reports
   PENDING rather than failing, so `main` stays green); C's `requirements-pipeline.txt`
   gates the library whitelist the system prompt states; D's `prompts/*.md` override
@@ -128,7 +145,8 @@ Format: what changes, why, who acked, when the old shape can go.
   - *Model id:* on Anthropic it defaults to `claude-opus-5`. On OpenAI, `TECHJAM_MODEL`
     is **required** — `default_model_for()` raises rather than guess an id, because a
     wrong one discovered four hours into a scored run is a lost run.
-  - *Acked by:* — (needs one)
+  - *Acked by:* — (needs one; B has taken the OpenAI path in the meantime because it
+    is the only key the team has, and the Anthropic default is untouched)
   - *Old shape can go:* never; both stay.
 
 ## Fault-injection results (B fills, D uses in the writeup)
