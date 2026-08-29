@@ -68,6 +68,15 @@ The organisers published these results. They are facts about this dataset, not o
   popularity times a user bias scores identically to bare item popularity, to the digit.
   User-side information can only pay through a **cross with the item or context side**.
 
+We measured one more ourselves, and it is the subtlest of the four:
+
+- **If you use a pairwise ranking loss, weight the pair sampling by each user's positive
+  count — not uniformly.** The metric averages per-user AUC *weighted by positive count*,
+  so uniform sampling optimises a different quantity from the one being scored. Same model,
+  same loss, only the weighting changed: uniform scored 0.5982, positive-weighted scored
+  0.6032. The weighting decides whether the idea looks like a win or a failure. If a
+  ranking loss appears not to work, check this before concluding the loss is wrong.
+
 The bottleneck is therefore neither features nor capacity. Treat any proposal that amounts
 to "add more fields" or "make the embedding bigger" as already refuted, and say so rather
 than spending the turn.

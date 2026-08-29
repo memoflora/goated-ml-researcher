@@ -49,6 +49,16 @@ dead_ends:
     verdict: "Measured false. k = 8 / 16 / 32 gives 0.5895 / 0.5902 / 0.5887. Flat.
       1.14M rows will not support more capacity."
 
+  - id: DEAD.uniform-pair-sampling
+    claim: "With a pairwise ranking loss, sampling training pairs uniformly across users
+      is a reasonable default."
+    verdict: "Measured harmful, and it inverts the conclusion. Same model, same loss,
+      only the sampling weight changed: uniform users scored 0.5982 (-0.0034 vs baseline),
+      users weighted by positive count scored 0.6032 (+0.0016). GAUC averages per-user AUC
+      weighted by positive count, so uniform sampling optimises a different quantity from
+      the one being scored. If a ranking loss appears to fail, check this before concluding
+      the loss does not work."
+
   - id: DEAD.user-side-first-order
     claim: "Adding a user-side feature as a first-order term helps."
     verdict: "Mathematically zero. Ranking is within-user, so any term constant inside a user
@@ -128,10 +138,13 @@ ideas:
     tier: 1
     title: Replace pointwise logloss with BPR pairwise loss inside each user
     summary: >-
-      For each user in a batch, sample (positive, negative) impression pairs from that
-      user's own rows and minimise -log(sigmoid(s_pos - s_neg)). Keep the FM scorer exactly
-      as is; change only the loss. This aligns training with GAUC, which is itself a
-      within-user pairwise ordering measure.
+      For each user, sample (positive, negative) impression pairs from that user's own rows
+      and minimise -log(sigmoid(s_pos - s_neg)). Keep the FM scorer exactly as is; change
+      only the loss. Sample users in proportion to their POSITIVE COUNT, not uniformly:
+      GAUC averages per-user AUC weighted by positive count, so uniform sampling optimises
+      a different quantity. Drawing a positive row uniformly from all positives does this
+      in one line. Measured on this dataset: positive-weighted +0.0016 over baseline,
+      uniform -0.0034. The weighting decides the sign of the result.
     citation: "Rendle et al., BPR: Bayesian Personalized Ranking from Implicit Feedback, UAI 2009, arXiv:1205.2618"
     est_minutes: 15
     prerequisites: [T0.reproduce-fm]
@@ -157,6 +170,19 @@ ideas:
       nDCG@5 far more sharply than uniform pair sampling.
     citation: "Burges, From RankNet to LambdaRank to LambdaMART: An Overview, MSR-TR-2010-82"
     est_minutes: 20
+    prerequisites: [T1.bpr-pairwise]
+
+  - id: T1.pair-weighting-sweep
+    tier: 1
+    title: Tune how much each user contributes to the pair stream
+    summary: >-
+      Once a pairwise loss is in place, the sampling weight is a first-class hyperparameter,
+      not a detail. Sweep the exponent a in (user positive count)^a: a=0 is uniform, a=1
+      matches GAUC's own weighting. Measured swing between the two on this dataset is 0.005
+      primary - larger than most model changes - so tune it before concluding anything
+      about the loss itself.
+    citation: null
+    est_minutes: 12
     prerequisites: [T1.bpr-pairwise]
 
   - id: T1.hard-negative-pairs

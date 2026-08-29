@@ -212,12 +212,14 @@ def test_system_prompt_carries_every_dead_end():
     """
     text = (PROMPTS / "system.md").read_text(encoding="utf-8").lower()
     ends = knowledge.dead_ends()
-    assert len(ends) >= 3
+    assert len(ends) >= 4
     # each dead end must be recognisable in the prompt by its distinguishing number/idea
-    assert "0.5940" in text and "0.5950" in text      # more static features
+    assert "0.5940" in text and "0.5950" in text       # more static features
     assert "0.5895" in text or "0.5902" in text        # more capacity
     assert "within-user" in text                       # user-side first-order terms
     assert "exactly zero" in text
+    assert "0.5982" in text and "0.6032" in text       # uniform vs weighted pair sampling
+    assert "positive count" in text
 
 
 def test_improve_prompt_demands_one_change_and_warns_about_noise():

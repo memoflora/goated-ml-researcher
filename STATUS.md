@@ -110,10 +110,36 @@ Notes for whoever integrates:
       variable contract; a test asserts no prompt uses a variable `agent.py` does not supply
 - [x] idea bank entries: 32 / 30, retiered per starter-kit findings
 - [x] `knowledge.py` — module-level `retrieve()` / `dead_ends()`, wired and feeding the loop
-- [ ] reference pipeline beats baseline (H+36)
+- [x] reference pipeline beats baseline — BPR-FM, validation primary **0.6032** vs
+      baseline 0.6016 (+0.0016), seeds 0/1/2 = 0.6033/0.6032/0.6030, std 0.0001
 - [ ] Devpost draft
-- now: prompts + knowledge landed, 35 D tests, 122 green overall
+- now: prompts + knowledge + reference pipeline landed, 35 D tests, 122 green overall
 - blocked on: nothing
+
+**D -> everyone: the pair-sampling weight matters more than the loss function.**
+`reference/bpr_fm.py` is a controlled experiment — same 5 fields, same FM, same Adam, same
+early stopping, only pointwise logloss -> within-user pairwise BPR. Result depends entirely
+on one detail nobody would think to state:
+
+| pair sampling | validation primary | vs baseline |
+|---|---|---|
+| users uniformly | 0.5982 | **-0.0034** |
+| users weighted by positive count | 0.6032 | **+0.0016** |
+
+GAUC averages per-user AUC *weighted by positive count*, so uniform sampling optimises a
+different quantity from the one we are scored on. A 0.005 swing, and the sign of the result
+flips on it. I had it wrong on the first pass.
+
+Why this matters for the run: an agent that implements the obvious thing — uniform pairs —
+measures -0.0034, concludes the organisers' top-ranked direction is refuted, and abandons
+the whole T1 tier because of an implementation detail. `ideas.yaml` and `system.md` now
+state the weighting explicitly, and it is recorded as a dead end.
+
+Calibration read: headroom above baseline on validation is 0.2468 (oracle 0.8484). One
+ranking-loss change captures ~0.6% of it. **Gains will come from stacking, not one clever
+idea.** And when our autonomous runs plateau near 0.603, that is this configuration's
+ceiling rather than evidence the agent is failing — anything meaningfully past it means the
+agent found something this control did not.
 - now:
 - blocked on:
 
