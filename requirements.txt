@@ -1,0 +1,5 @@
+# Orchestrator dependencies. The generated pipeline.py may NOT import from here —
+# its whitelist is requirements-pipeline.txt (owner: C).
+anthropic==0.51.0
+pytest==8.3.4
+ruff==0.9.6
