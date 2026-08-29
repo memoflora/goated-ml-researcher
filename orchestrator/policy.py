@@ -202,6 +202,9 @@ def is_flat(before: float | None, after: float | None, eps: float) -> bool:
     return (after - before) <= eps
 
 
+_FP_TOL = 1e-9  # metrics are 4dp; never let float error decide when a 6h run stops
+
+
 def converged(best_history: Iterable[float], *, eps: float, n: int) -> bool:
     """No improvement > eps over the last `n` **scored** iterations.
 
@@ -212,4 +215,8 @@ def converged(best_history: Iterable[float], *, eps: float, n: int) -> bool:
     hist = list(best_history)
     if len(hist) <= n:
         return False
-    return (hist[-1] - hist[-1 - n]) <= eps
+    # The rule is "not improved by MORE than eps", so an improvement of exactly eps
+    # converges. Binary floating point makes 0.6020 - 0.6000 == 0.002000000000000002,
+    # which fails a bare <= and silently keeps a converged run iterating - burning
+    # wall-clock and tokens, both of which are scored. Compare with a tolerance.
+    return (hist[-1] - hist[-1 - n]) - eps <= _FP_TOL

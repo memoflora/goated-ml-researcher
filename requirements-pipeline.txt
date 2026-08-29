@@ -1,0 +1,28 @@
+# Libraries the AGENT-GENERATED pipeline.py may import. Nothing else is installed in the
+# sandbox, so an import outside this list is an `import` error and goes to the repair loop.
+# This list is stated verbatim in the agent's system prompt (owner D) — keep them in sync.
+#
+# Adding a library here is Role C's call. The bar: it must unlock a direction the idea bank
+# actually contains, and it is install time and wheel size on every sandbox rebuild.
+# The sandbox venv is built ONCE per run and reused across nodes (see STATUS -> Requests),
+# so this cost is paid once, not 50 times.
+#
+# NOTE: the orchestrator's own tooling deps live in requirements.txt, not here. A generated
+# pipeline must never import from `orchestrator/` — it is a standalone file by contract.
+
+# --- core numerics: the official baseline needs only numpy ---
+numpy==2.3.5
+scipy==1.16.3           # sparse matrices for wide linear / FM-style models
+
+# --- tabular feature engineering ---
+pandas==2.3.3
+
+# --- classical models ---
+scikit-learn==1.7.2     # out-of-fold splitters, encoders, linear models, calibration
+lightgbm==4.7.0         # GBDT on engineered features; also `lambdarank` for listwise ranking
+
+# --- neural / ranking losses ---
+# CPU only. GPU and distributed training are explicit non-goals (contracts.md), but torch is
+# what makes the two highest-headroom directions the organisers flagged tractable in one
+# iteration: pairwise/listwise ranking losses, and user-behaviour-sequence models.
+torch==2.9.0

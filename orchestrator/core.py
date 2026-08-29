@@ -147,11 +147,19 @@ def atomic_write(path: Path, text: str) -> None:
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
-    dir_fd = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    # Fsync the directory so the rename itself is durable. This is a POSIX idiom:
+    # os.open() on a directory raises PermissionError on Windows, where os.replace is
+    # already atomic (MoveFileEx REPLACE_EXISTING). Best-effort either way - the rename,
+    # not the dirsync, is what guarantees a reader sees the old file or the new one.
+    if os.name != "nt":
+        try:
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
 
 
 def git_sha() -> str:
