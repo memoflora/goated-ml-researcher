@@ -80,6 +80,17 @@ def no_sleeping(monkeypatch):
     monkeypatch.setattr(agent_mod.time, "sleep", lambda *_: None)
 
 
+@pytest.fixture(autouse=True)
+def no_ambient_dotenv(monkeypatch):
+    """Tests must not care whether the developer running them has a `.env`.
+
+    Without this, provider-selection tests pass in CI (no key) and fail on a
+    configured box (key found) — the worst kind of flake, because it disagrees
+    with itself across machines. `load_dotenv(explicit_path)` still works, so
+    TestDotenv exercises the real thing."""
+    monkeypatch.setattr(agent_mod, "dotenv_candidates", list)
+
+
 @pytest.fixture
 def ctx():
     return Context(
@@ -603,3 +614,53 @@ class TestKeyShape:
         monkeypatch.setenv("TECHJAM_LLM", "openai")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-abcdefghijklmnop")
         assert isinstance(agent_mod.make_client(), agent_mod.OpenAIClient)
+
+
+class TestTemperatureFallback:
+    """Reasoning models accept only the default temperature. A 400 is not retryable,
+    so without this the first improve() call of a run would kill its node."""
+
+    class Temp400(Exception):
+        status_code = 400
+
+        def __str__(self):
+            return ("Unsupported value: 'temperature' does not support 0.6 with this "
+                    "model. Only the default (1) value is supported.")
+
+    class Other400(Exception):
+        status_code = 400
+
+        def __str__(self):
+            return "Invalid schema for function 'submit_pipeline'."
+
+    def completion(self):
+        return FakeOpenAICompletion(json.dumps(GOOD_PAYLOAD), FakeOpenAIUsage(900, 100))
+
+    def test_retries_without_temperature_and_succeeds(self, ctx):
+        a, sdk = openai_agent([self.Temp400(), self.completion()])
+        assert a.draft(ctx).hypothesis
+        assert "temperature" in sdk.calls[0]
+        assert "temperature" not in sdk.calls[1]
+        assert sdk.calls[1]["model"] == "test-model"
+
+    def test_the_lesson_is_remembered_per_model(self, ctx):
+        """Paying the 400 once per run is fine; paying it on all 50 iterations is not."""
+        a, sdk = openai_agent([self.Temp400(), self.completion(), self.completion()])
+        a.draft(ctx)
+        ctx.parent_code = "print(1)\n"
+        a.improve(ctx, node())
+        assert len(sdk.calls) == 3
+        assert "temperature" not in sdk.calls[2], "should not re-learn the same lesson"
+        assert a.client.fixed_temperature_models() == {"test-model"}
+
+    def test_other_400s_are_not_swallowed(self, ctx):
+        a, sdk = openai_agent([self.Other400(), self.completion()])
+        with pytest.raises(AgentError):
+            a.draft(ctx)
+        assert len(sdk.calls) == 1, "only a temperature 400 gets the second chance"
+
+    def test_a_model_that_accepts_temperature_is_left_alone(self, ctx):
+        a, sdk = openai_agent([self.completion()])
+        a.draft(ctx)
+        assert sdk.calls[0]["temperature"] == agent_mod.TEMPERATURE["draft"]
+        assert a.client.fixed_temperature_models() == set()

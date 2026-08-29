@@ -316,17 +316,30 @@ def repair_exhausted(node: Node) -> bool:
 # clients
 # --------------------------------------------------------------------------- #
 
-def load_dotenv(path: Path | None = None) -> None:
+def dotenv_candidates() -> list[Path]:
+    """Where we look for `.env`, in order. The repo root is the documented spot;
+    the package directory and the cwd are here because that is where people
+    actually put it, and a silently unconfigured box is worse than a forgiving
+    search."""
+    root = Path(__file__).resolve().parent.parent
+    return [root / ".env", root / "orchestrator" / ".env", Path.cwd() / ".env"]
+
+
+def load_dotenv(path: Path | None = None) -> Path | None:
     """Read `.env` into the environment without overriding what is already set.
+    Returns the file it used, or None. Never logs a value.
 
     Fifteen lines instead of a dependency. `.env` is gitignored, and `sandbox.py`
     strips every key-shaped variable out of the child environment, so a generated
     pipeline never sees one.
     """
-    path = Path(path) if path else Path(__file__).resolve().parent.parent / ".env"
-    if not path.is_file():
-        return
-    for raw in path.read_text().splitlines():
+    if path is not None:
+        found = Path(path)
+    else:
+        found = next((c for c in dotenv_candidates() if c.is_file()), None)
+    if found is None or not found.is_file():
+        return None
+    for raw in found.read_text().splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -335,6 +348,7 @@ def load_dotenv(path: Path | None = None) -> None:
         name = name.strip()
         if sep and name and name not in os.environ:
             os.environ[name] = value.strip().strip('"').strip("'")
+    return found
 
 
 # A key pasted under the wrong variable is a 401 four hours into a run, or worse a
@@ -429,6 +443,7 @@ class OpenAIClient:
 
     def __init__(self, client):
         self._client = client
+        self._no_temperature: set[str] = set()
 
     @property
     def messages(self):
@@ -436,19 +451,38 @@ class OpenAIClient:
 
     def create(self, *, model, max_tokens, temperature, system, messages,
                tools, tool_choice, **_ignored):
-        completion = self._client.chat.completions.create(
-            model=model,
-            max_completion_tokens=max_tokens,
-            temperature=temperature,
-            messages=[{"role": "system", "content": _flatten_system(system)}, *messages],
-            tools=[_as_openai_tool(t) for t in tools],
-            tool_choice={"type": "function",
-                         "function": {"name": tool_choice["name"]}},
-        )
+        kwargs = {
+            "model": model,
+            "max_completion_tokens": max_tokens,
+            "messages": [{"role": "system", "content": _flatten_system(system)}, *messages],
+            "tools": [_as_openai_tool(t) for t in tools],
+            "tool_choice": {"type": "function", "function": {"name": tool_choice["name"]}},
+        }
+        if model not in self._no_temperature:
+            kwargs["temperature"] = temperature
+
+        try:
+            completion = self._client.chat.completions.create(**kwargs)
+        except Exception as exc:                       # noqa: BLE001 - re-raised below
+            if not _rejects_temperature(exc) or "temperature" not in kwargs:
+                raise
+            # Reasoning models accept only the default temperature. Learn it once,
+            # per model, and carry on: a 400 is not retryable, so without this the
+            # first improve() call of the run would kill its node outright.
+            self._no_temperature.add(model)
+            kwargs.pop("temperature")
+            completion = self._client.chat.completions.create(**kwargs)
+
         return _AdaptedMessage(
             content=_as_tool_use_blocks(completion),
             usage=_as_anthropic_usage(completion.usage),
         )
+
+    def fixed_temperature_models(self) -> set[str]:
+        """Models found to reject a custom temperature. Worth journalling: it means
+        draft diversity rests entirely on the prompt angle, which is where we wanted
+        it anyway."""
+        return set(self._no_temperature)
 
 
 @dataclass
@@ -469,6 +503,13 @@ def _flatten_system(system) -> str:
     if isinstance(system, str):
         return system
     return "\n\n".join(block["text"] for block in system)
+
+
+def _rejects_temperature(exc: Exception) -> bool:
+    """A 400 specifically about the temperature value, not any other bad request."""
+    if getattr(exc, "status_code", None) != 400:
+        return False
+    return "temperature" in str(exc).lower()
 
 
 def _as_openai_tool(tool: dict) -> dict:
