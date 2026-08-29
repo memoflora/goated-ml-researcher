@@ -39,9 +39,51 @@ H+60). Bullets, not prose.
 - **Decision taken: we run on OpenAI.** No Anthropic key is available to the team.
   Anthropic stays supported and stays the code default; `TECHJAM_LLM=openai` in `.env`
   selects the provider for our runs. Contract change below still needs one ack.
-- next: real-API shakedown — blocked only on a *valid* key reaching `.env`. Then
-  prompt-cache hit rate measured against the API's own usage numbers, and token cap
-  enforcement in `Context`.
+- [x] live API probe — key works, 120 models reachable. **Three findings that change
+  how we configure the run:**
+  1. **`gpt-5.5` rejects any `temperature` except 1** (400, and a 400 is deliberately
+     not retryable). The adapter would have raised on the *first* `improve()` call of
+     the scored run — temperature 0.6 — and killed that node, having looked perfectly
+     healthy for exactly one iteration. Now caught, dropped, retried once and
+     remembered per model. Costs us nothing real: draft diversity comes from the
+     prompt angle, not temperature, which is what roles.md asks for anyway.
+  2. **Codex models are not served by `v1/chat/completions`** — `gpt-5.3-codex` and
+     friends 404 with "use the v1/responses endpoint". Out of scope unless someone
+     writes a Responses adapter. Do not put one in `TECHJAM_MODEL`.
+  3. **`gpt-5.4` accepts a custom temperature; `gpt-5.5` does not.** Both work.
+- [x] **live shakedown done — everything in my "Done when" list is now verified
+  against the real API, not the stub.**
+  - **Prompt caching works.** `gpt-5.4` cold call: 0 cached. Every call after:
+    1,536 of 2,080 input tokens served from cache, ~74%. Our static block leads the
+    request and is byte-identical across calls, which is exactly what OpenAI's
+    automatic prefix caching needs. No `cache_control` marker required.
+  - **Token accounting is exact.** `Usage.tokens_in` equals the API's own
+    `prompt_tokens` on every call. A journalled total will match the bill.
+  - **`hypothesis` is never empty**, and the ones we got read like real claims that
+    could turn out false — "repeated user_id/video_id identities with leakage-safe
+    target statistics", "categorical ids in validation not observed in training".
+    D: these are quotable for the Innovation section.
+  - **Draft diversity 3/3 distinct** on both models, from prompt angle alone.
+  - **Temperature fallback verified live on the call that would have broken.**
+    `improve()` at 0.6 against `gpt-5.5`: fallback engaged, call succeeded,
+    `fixed_temperature_models == {'gpt-5.5'}`. The draft-only shakedown passed
+    *without* triggering it — drafts run at 1.0, the one value that model accepts —
+    so a lighter smoke test would have declared this healthy and lost the run.
+
+| 3 live drafts | wall-clock | output tokens | input (cached) |
+|---|---|---|---|
+| `gpt-5.5` | 160 s | 16,530 | 6,242 (4,608) |
+| `gpt-5.4` | 66 s | 10,973 | 6,242 (3,072) |
+
+- **`TECHJAM_MODEL=gpt-5.5`**, set in `.env`. Capability first: the Feasibility tier
+  is *only scored among entries that beat the baseline*, so the gate is the score,
+  not the cost. `gpt-5.4` is the documented fallback — 2.4x faster and ~1.5x cheaper
+  in output tokens — and switching is one env var, no code change. If wall-clock gets
+  tight, note that LLM time is ~50 s/iteration on 5.5 vs ~22 s on 5.4, which is ~25
+  minutes across a 50-iteration run; training still dominates, but the 6 h ceiling is
+  not roomy.
+- next: token cap enforcement in `Context`; a cheaper model for `repair` calls only
+  (they are mechanical) is an easy Feasibility win if we need one later.
 
 **Everyone: how to configure your box.** `.env` at the repo root, gitignored, never
 committed. Nothing else reads a key.
