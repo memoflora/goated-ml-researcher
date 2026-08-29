@@ -1,0 +1,23 @@
+# Tooling config only — no packaging, this is a flat 72-hour project.
+# OWNER: B (it backs `make check`). Anyone may add a per-file ignore for their files.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["tests/fixtures/pipelines", "reference", "runs", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM"]
+ignore = [
+    "E501",    # line length is enforced by the formatter, not the linter
+    "B008",    # function call in default argument — deliberate in dataclass factories
+    "SIM105",  # contextlib.suppress is not clearer than try/except/pass here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "SIM117"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers -p no:randomly"
+filterwarnings = ["ignore::DeprecationWarning"]

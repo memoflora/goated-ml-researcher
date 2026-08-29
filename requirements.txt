@@ -1,0 +1,10 @@
+# Orchestrator dependencies. The generated pipeline.py may NOT import from here —
+# its whitelist is requirements-pipeline.txt (owner: C).
+#
+# Both providers are installed. agent.py speaks the Anthropic Messages shape and
+# adapts OpenAI to it, so the orchestrator never knows which one is live — and we
+# can switch providers mid-weekend without a code change if one starts throttling.
+anthropic==0.51.0
+openai==1.66.5
+pytest==8.3.4
+ruff==0.9.6
