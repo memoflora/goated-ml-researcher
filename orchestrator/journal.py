@@ -21,7 +21,10 @@ from collections.abc import Iterator
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # `Self` is 3.11+; never evaluated at runtime, so 3.10 still works
+    from typing import Self
 
 #: Field order in every written line. Readers do not care; humans diffing do.
 _FIELD_ORDER = (

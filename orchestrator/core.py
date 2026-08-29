@@ -46,6 +46,8 @@ from orchestrator.contracts import (
 )
 from orchestrator.journal import Accountant
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 #: Fallback whitelist when C's requirements-pipeline.txt is not on disk yet.
 DEFAULT_WHITELIST = ["numpy", "scipy", "pandas", "scikit-learn", "lightgbm", "torch"]
 
@@ -764,7 +766,7 @@ class Orchestrator:
 
     def whitelist(self) -> list[str]:
         if self._whitelist is None:
-            req = Path("requirements-pipeline.txt")
+            req = REPO_ROOT / "requirements-pipeline.txt"
             if req.exists():
                 self._whitelist = [
                     ln.strip()

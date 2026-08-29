@@ -60,13 +60,13 @@ def test_smoke_run_three_iterations_end_to_end(tmp_path):
     assert (orch.run_dir / "interventions.md").exists()
     # Every node keeps the exact program that produced its score.
     for node in orch.tree.nodes.values():
-        assert (node.workspace / "pipeline.py").read_text() == node.proposal.code
+        assert (node.workspace / "pipeline.py").read_text(encoding="utf-8") == node.proposal.code
 
 
 def test_journal_is_valid_jsonl_and_carries_the_graded_fields(tmp_path):
     orch = build(tmp_path)
     orch.run()
-    raw = (orch.run_dir / "journal.jsonl").read_text().splitlines()
+    raw = (orch.run_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines()
     assert raw and all(json.loads(line) for line in raw)
 
     seen = {r["event"] for r in rows(orch.run_dir)}
@@ -88,9 +88,9 @@ def test_run_start_is_emitted_exactly_once(tmp_path):
 def test_config_and_state_are_written(tmp_path):
     orch = build(tmp_path)
     orch.run()
-    cfg = json.loads((orch.run_dir / "config.json").read_text())
+    cfg = json.loads((orch.run_dir / "config.json").read_text(encoding="utf-8"))
     assert cfg["task"]["conv_eps"] == 0.002 and cfg["git_sha"]
-    state = json.loads((orch.run_dir / "state.json").read_text())
+    state = json.loads((orch.run_dir / "state.json").read_text(encoding="utf-8"))
     assert state["tree"]["nodes"] and state["stop_reason"] == "max_iters"
 
 
@@ -197,7 +197,7 @@ def test_fifty_iteration_run_completes_with_a_valid_journal(tmp_path):
     orch = build(tmp_path, script=CLIMBING_SCRIPT, max_iters=50)
     summary = orch.run()
     assert summary["iterations"] == 50 and summary["stop_reason"] == "max_iters"
-    lines = (orch.run_dir / "journal.jsonl").read_text().splitlines()
+    lines = (orch.run_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines()
     assert all(json.loads(line)["run_id"] == "rtest" for line in lines)
     assert len(orch.tree.nodes) == 50
 
@@ -276,11 +276,11 @@ def test_final_submission_is_the_best_node_rerun_on_the_test_split(tmp_path):
     summary = orch.run()
     final = Path(summary["final_submission"])
     assert final.name == "submission.csv" and final.parent.name == "final"
-    assert final.read_text().splitlines()[0] == "row_id,user_id,video_id,score"
+    assert final.read_text(encoding="utf-8").splitlines()[0] == "row_id,user_id,video_id,score"
     for seed in (0, 1, 2):
         assert (orch.run_dir / "final" / f"seed{seed}" / "pipeline.py").exists()
     best_code = orch.tree.nodes[summary["best_node"]].proposal.code
-    assert (orch.run_dir / "final" / "seed1" / "pipeline.py").read_text() == best_code
+    assert (orch.run_dir / "final" / "seed1" / "pipeline.py").read_text(encoding="utf-8") == best_code
 
 
 def test_finalisation_survives_a_failing_seed(tmp_path):
@@ -300,14 +300,15 @@ def test_rank_average_orders_by_mean_rank(tmp_path):
     def write(path, scores):
         path.write_text(
             "row_id,user_id,video_id,score\n"
-            + "".join(f"{i},{i},{i},{s}\n" for i, s in enumerate(scores))
+            + "".join(f"{i},{i},{i},{s}\n" for i, s in enumerate(scores)),
+            encoding="utf-8",
         )
 
     a, b, out = tmp_path / "a.csv", tmp_path / "b.csv", tmp_path / "out.csv"
     write(a, [0.1, 0.9, 0.5])
     write(b, [10.0, 30.0, 20.0])  # same order, wildly different scale
     rank_average([a, b], out)
-    lines = out.read_text().splitlines()[1:]
+    lines = out.read_text(encoding="utf-8").splitlines()[1:]
     scores = [float(line.split(",")[3]) for line in lines]
     assert scores[1] > scores[2] > scores[0]
 
@@ -319,7 +320,7 @@ def test_atomic_write_leaves_no_partial_file(tmp_path):
     target = tmp_path / "state.json"
     atomic_write(target, '{"a": 1}')
     atomic_write(target, '{"a": 2}')
-    assert json.loads(target.read_text())["a"] == 2
+    assert json.loads(target.read_text(encoding="utf-8"))["a"] == 2
     assert not list(tmp_path.glob("*.tmp"))
 
 
@@ -375,15 +376,16 @@ def test_kill_dash_nine_then_resume_loses_no_checkpointed_node(tmp_path):
                 evaluator=StubEvaluator(), mode="smoke",
             ).run()
             """
-        )
+        ),
+        encoding="utf-8",
     )
     proc = subprocess.run([sys.executable, str(child)], capture_output=True, timeout=60, check=False)
     assert proc.returncode == -9, "the child was supposed to be SIGKILLed"
 
     # Nothing on disk is torn: the checkpoint parses and the journal still reads.
-    state = json.loads((run_dir / "state.json").read_text())
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
     assert state["iteration"] == 3 and len(state["tree"]["nodes"]) == 3
-    assert all(json.loads(line) for line in (run_dir / "journal.jsonl").read_text().splitlines())
+    assert all(json.loads(line) for line in (run_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines())
 
     journal_mod.close()
     resumed = Orchestrator.resume(
@@ -414,3 +416,106 @@ def test_two_runs_in_the_same_minute_never_share_a_directory(tmp_path):
     third = new_run_id(now, runs_dir=tmp_path)
     assert first == "r20260830-0412"
     assert len({first, second, third}) == 3
+
+
+def test_atomic_write_survives_a_filesystem_that_refuses_directory_fsync(tmp_path, monkeypatch):
+    """Windows cannot open a directory as a fd, and some filesystems refuse it.
+
+    os.replace is already atomic everywhere; the directory fsync is a POSIX
+    durability bonus and must never be able to fail a checkpoint.
+    """
+    from orchestrator import core
+
+    real_open = os.open
+
+    def refusing_open(path, flags, *args, **kwargs):
+        if flags == os.O_RDONLY and Path(path).is_dir():
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(core.os, "open", refusing_open)
+    target = tmp_path / "state.json"
+    atomic_write(target, '{"iteration": 7}')
+    assert json.loads(target.read_text(encoding="utf-8"))["iteration"] == 7
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_runtime_imports_stay_within_the_pinned_python_version(tmp_path):
+    """`typing.Self` is 3.11+. Importing it at runtime broke a teammate's setup.
+
+    Type-checker-only imports under `if TYPE_CHECKING:` are fine; runtime ones
+    are not, because they fail at import time and take the whole run with them.
+    """
+    import ast
+
+    offenders = []
+    for path in sorted(Path(REPO_ROOT / "orchestrator").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        guarded = {
+            id(child)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and "TYPE_CHECKING" in ast.dump(node.test)
+            for child in ast.walk(node)
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "typing":
+                if id(node) in guarded:
+                    continue
+                offenders += [
+                    f"{path.name}: {alias.name}"
+                    for alias in node.names
+                    if alias.name in {"Self", "Never", "LiteralString", "TypeVarTuple"}
+                ]
+    assert not offenders, f"3.11+ typing names imported at runtime: {offenders}"
+
+
+def test_journal_round_trips_non_ascii_whatever_the_locale(tmp_path):
+    """A real LLM writes em dashes and ellipses. Windows reads cp1252 by default.
+
+    Writing was always explicit utf-8; reading back without an encoding was not,
+    and that combination is a UnicodeDecodeError on any non-utf-8 locale.
+    """
+    hypothesis = "FM ignores duration bias — long videos dominate…"
+    j = journal_mod.Journal(tmp_path / "journal.jsonl", "r1", fsync=False)
+    j.emit({"event": "proposal", "hypothesis": hypothesis})
+    j.close()
+    assert [r["hypothesis"] for r in journal_mod.read(tmp_path / "journal.jsonl")] == [hypothesis]
+
+
+def test_no_text_file_io_relies_on_the_platform_default_encoding():
+    """Windows defaults to cp1252, Linux/macOS to utf-8. Never rely on either.
+
+    Scoped to the files A owns. Offenders elsewhere are reported to their owner
+    in STATUS.md rather than failing their build; `make check` staying green is
+    the team's top priority, and this is not my lane to enforce in.
+    """
+    import ast
+
+    owned = [REPO_ROOT / "orchestrator" / f"{m}.py" for m in
+             ("contracts", "core", "policy", "journal", "run")]
+    owned += [REPO_ROOT / "tests" / "test_core.py", REPO_ROOT / "tests" / "test_policy.py"]
+    owned += sorted((REPO_ROOT / "tests" / "stubs").glob("*.py"))
+
+    offenders = []
+    for path in owned:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            # bare open(...) is the dangerous form; .read_text()/.write_text()/.open() too
+            if isinstance(node.func, ast.Name):
+                if node.func.id != "open":
+                    continue
+            elif isinstance(node.func, ast.Attribute):
+                if node.func.attr not in {"read_text", "write_text", "open"}:
+                    continue
+                if isinstance(node.func.value, ast.Name) and node.func.value.id == "os":
+                    continue  # os.open takes fd flags, not an encoding
+            else:
+                continue
+            if any(kw.arg == "encoding" for kw in node.keywords):
+                continue
+            if any(isinstance(a, ast.Constant) and "b" in str(a.value) for a in node.args):
+                continue  # binary mode
+            offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+    assert not offenders, f"text I/O without an explicit encoding: {offenders}"
