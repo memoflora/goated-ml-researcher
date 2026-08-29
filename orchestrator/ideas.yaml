@@ -1,0 +1,459 @@
+# Idea bank — what the agent draws hypotheses from.
+#
+# Tiering follows the organisers' own ranked list of untested directions
+# (see references/starter-kit-findings.md), NOT the usual instinct to reach for a
+# bigger model. Measured facts that set this ordering:
+#
+#   * More static features gains nothing:  0.5940 vs the 5-field 0.5950.
+#   * More capacity gains nothing:         k = 8/16/32 -> 0.5895 / 0.5902 / 0.5887.
+#   * Ranking is WITHIN-USER, so any term constant inside a user contributes
+#     exactly zero. User-side features only matter through item-side crosses.
+#
+#   => The bottleneck is neither features nor capacity. It is that the objective
+#      (pointwise logloss) does not match the metric (GAUC / nDCG, both ranking).
+#
+# Tiers, lowest first. `retrieve()` prefers the lowest tier with untried entries and
+# escalates when a tier stops producing gains.
+#
+#   T0  baseline parity and hygiene      cheap, must-do, small payoff
+#   T1  objective alignment              organisers' #1 pick. Highest expected payoff.
+#   T2  user history sequences           organisers' #2. Currently a total blank.
+#   T3  multi-task and watch time        organisers' #3 and #4.
+#   T4  architecture, time, ensembling   organisers' #5-#7. Explicitly last.
+#
+# Every summary must be actionable in ONE iteration by an LLM writing pipeline.py.
+# "Use MMoE" is useless. Say what to add, how to train it, and what to score.
+
+meta:
+  baseline_val_primary: 0.6016
+  baseline_test_primary: 0.5946
+  ceiling_primary: 0.8645
+  seed_std: 0.0008
+  source: starter-kit README + baseline_scores.json
+
+# ---------------------------------------------------------------------------
+# Anti-ideas. Injected into every prompt as "do not propose these, and why".
+# Negative knowledge is worth as much as positive here: each of these would burn
+# an iteration to reproduce a result the organisers already published.
+# ---------------------------------------------------------------------------
+dead_ends:
+  - id: DEAD.more-static-features
+    claim: "Adding more static categorical fields improves the score."
+    verdict: "Measured false. All 13 CWM feature fields (music_id, video_type, upload_type,
+      plus 6 coarse user-side buckets) scored primary 0.5940 against the 5-field baseline's
+      0.5950 — inside noise, slightly worse. user_id x video_id already absorbs the signal,
+      and coarse user buckets are redundant given user_id."
+
+  - id: DEAD.more-capacity
+    claim: "A larger embedding dimension improves the score."
+    verdict: "Measured false. k = 8 / 16 / 32 gives 0.5895 / 0.5902 / 0.5887. Flat.
+      1.14M rows will not support more capacity."
+
+  - id: DEAD.user-side-first-order
+    claim: "Adding a user-side feature as a first-order term helps."
+    verdict: "Mathematically zero. Ranking is within-user, so any term constant inside a user
+      cannot change intra-user order. Measured: item_pop x user_bias scores identically to
+      plain item_pop, to the digit. User-side signal must enter through a CROSS with the
+      item side, never as a standalone first-order term."
+
+# ---------------------------------------------------------------------------
+# T0 — baseline parity and hygiene
+# Get to a trustworthy, reproducible FM before trying anything clever.
+# ---------------------------------------------------------------------------
+ideas:
+  - id: T0.reproduce-fm
+    tier: 0
+    title: Reproduce the official FM baseline in our own pipeline
+    summary: >-
+      Build the end-to-end pipeline as a factorization machine over the 5 official fields
+      (user_id, video_id, author_id, tab, dur_bucket) with k=16, lr=0.001, batch=8192,
+      max 40 epochs, patience 4. Confirm validation primary lands near 0.6016 before
+      changing anything. This is the reference every later iteration is measured against.
+    citation: null
+    est_minutes: 5
+    prerequisites: []
+
+  - id: T0.early-stop-on-primary
+    tier: 0
+    title: Early-stop on validation primary, not on training loss
+    summary: >-
+      Select the epoch by validation primary (mean of GAUC and nDCG@5), not by logloss.
+      Logloss and the ranking metric diverge: in the reference run loss keeps falling
+      through epoch 11 while primary peaks at epoch 7. Keep the best-epoch weights rather
+      than the last.
+    citation: null
+    est_minutes: 5
+    prerequisites: [T0.reproduce-fm]
+
+  - id: T0.seed-average
+    tier: 0
+    title: Average scores over multiple seeds before believing a gain
+    summary: >-
+      Train the same configuration under 3 seeds and average the per-row scores before
+      evaluating. Single-seed std is 0.0008, so a claimed +0.001 gain is noise. This both
+      stabilises the metric and usually adds a genuine small gain from ensembling.
+    citation: null
+    est_minutes: 10
+    prerequisites: [T0.reproduce-fm]
+
+  - id: T0.l2-and-lr-schedule
+    tier: 0
+    title: Tune L2 regularisation and add a learning-rate decay
+    summary: >-
+      Add weight decay on the embedding table and decay the learning rate once validation
+      primary plateaus. The reference run overfits after epoch 7, so regularisation is the
+      one hyperparameter direction with headroom left — unlike embedding dimension, which
+      was measured flat.
+    citation: null
+    est_minutes: 8
+    prerequisites: [T0.reproduce-fm]
+
+  - id: T0.item-pop-prior
+    tier: 0
+    title: Blend an item-popularity prior into the score
+    summary: >-
+      Item popularity alone scores 0.5715, close to FM's 0.5946, so it carries most of the
+      signal cheaply. Add a smoothed log item-CTR prior as an additive term and tune its
+      weight on validation. Item-side, so it does vary within a user and does affect the
+      ranking.
+    citation: null
+    est_minutes: 8
+    prerequisites: [T0.reproduce-fm]
+
+# ---------------------------------------------------------------------------
+# T1 — objective alignment.  The organisers' #1 pick and the single most likely win.
+# Training is pointwise logloss; the metric is a within-user ranking metric.
+# ---------------------------------------------------------------------------
+  - id: T1.bpr-pairwise
+    tier: 1
+    title: Replace pointwise logloss with BPR pairwise loss inside each user
+    summary: >-
+      For each user in a batch, sample (positive, negative) impression pairs from that
+      user's own rows and minimise -log(sigmoid(s_pos - s_neg)). Keep the FM scorer exactly
+      as is; change only the loss. This aligns training with GAUC, which is itself a
+      within-user pairwise ordering measure.
+    citation: "Rendle et al., BPR: Bayesian Personalized Ranking from Implicit Feedback, UAI 2009, arXiv:1205.2618"
+    est_minutes: 15
+    prerequisites: [T0.reproduce-fm]
+
+  - id: T1.listwise-softmax
+    tier: 1
+    title: Listwise softmax cross-entropy over each user's impression list
+    summary: >-
+      Group rows by user, apply a softmax over that user's impression scores, and maximise
+      the log-probability mass on the positive rows. Unlike BPR this uses the whole list at
+      once and directly shapes the top of the ranking, which is what nDCG@5 rewards.
+    citation: "Cao et al., Learning to Rank: From Pairwise Approach to Listwise Approach, ICML 2007"
+    est_minutes: 15
+    prerequisites: [T0.reproduce-fm]
+
+  - id: T1.lambda-weighted-pairs
+    tier: 1
+    title: Weight pairwise updates by the nDCG change swapping them would cause
+    summary: >-
+      Take the BPR pairwise loss and scale each pair's gradient by |delta nDCG@5| — the
+      metric change from swapping that pair's positions. Pairs that move items across the
+      top-5 boundary get large weight; pairs deep in the tail get almost none. This targets
+      nDCG@5 far more sharply than uniform pair sampling.
+    citation: "Burges, From RankNet to LambdaRank to LambdaMART: An Overview, MSR-TR-2010-82"
+    est_minutes: 20
+    prerequisites: [T1.bpr-pairwise]
+
+  - id: T1.hard-negative-pairs
+    tier: 1
+    title: Sample pairs against high-scoring negatives rather than uniformly
+    summary: >-
+      Within a user, bias pair sampling toward negatives the current model already scores
+      highly. Uniform sampling spends most updates on easy pairs that are already ordered
+      correctly. Re-rank each user's negatives every epoch and sample from the top slice.
+    citation: "Rendle and Freudenthaler, Improving Pairwise Learning for Item Recommendation from Implicit Feedback, WSDM 2014"
+    est_minutes: 12
+    prerequisites: [T1.bpr-pairwise]
+
+  - id: T1.within-user-centering
+    tier: 1
+    title: Centre scores within each user during training
+    summary: >-
+      Subtract the per-user mean score from every row of that user before computing the
+      loss. Because evaluation is within-user, absolute score level carries no information
+      and letting the model spend capacity on it is waste. This is a two-line change with
+      no new parameters.
+    citation: null
+    est_minutes: 8
+    prerequisites: [T0.reproduce-fm]
+
+  - id: T1.hinge-margin-rank
+    tier: 1
+    title: Margin ranking loss as a cheaper alternative to BPR
+    summary: >-
+      Use max(0, margin - (s_pos - s_neg)) over within-user pairs, with margin tuned on
+      validation. It stops pushing pairs already correctly ordered by more than the margin,
+      which concentrates capacity on genuinely confused pairs. Try it if BPR converges but
+      plateaus early.
+    citation: null
+    est_minutes: 10
+    prerequisites: [T1.bpr-pairwise]
+
+  - id: T1.pointwise-pairwise-blend
+    tier: 1
+    title: Train on a weighted sum of logloss and a ranking loss
+    summary: >-
+      Optimise alpha * logloss + (1 - alpha) * BPR, tuning alpha on validation. The
+      pointwise term keeps early training stable and well-calibrated while the ranking term
+      shapes the ordering. Frequently beats either loss alone; start at alpha = 0.3.
+    citation: null
+    est_minutes: 12
+    prerequisites: [T1.bpr-pairwise]
+
+# ---------------------------------------------------------------------------
+# T2 — user history sequences.  Organisers' #2.  Currently completely unused.
+# Every user has hundreds to thousands of train interactions and the baseline
+# looks at none of them.
+# ---------------------------------------------------------------------------
+  - id: T2.mean-pooled-history
+    tier: 2
+    title: Represent a user by the mean embedding of videos they long-viewed
+    summary: >-
+      For each user, average the video embeddings of their positive train interactions into
+      a history vector, and add its dot product with the candidate video embedding as a
+      score term. This is a user-item CROSS, so unlike a user-side bucket it does vary
+      within a user and does change the ranking. Cheapest possible entry into sequence
+      modelling.
+    citation: "Covington et al., Deep Neural Networks for YouTube Recommendations, RecSys 2016"
+    est_minutes: 20
+    prerequisites: [T0.reproduce-fm]
+
+  - id: T2.din-target-attention
+    tier: 2
+    title: Attend over the user's history conditioned on the candidate video
+    summary: >-
+      Replace the mean pool with attention: score each history item against the candidate
+      video, softmax the weights, and take the weighted sum as the user vector. Different
+      candidates then activate different parts of the user's history, which mean pooling
+      cannot express. Cap history length at the most recent 50 interactions.
+    citation: "Zhou et al., Deep Interest Network for Click-Through Rate Prediction, KDD 2018, arXiv:1706.06978"
+    est_minutes: 35
+    prerequisites: [T2.mean-pooled-history]
+
+  - id: T2.recency-weighted-history
+    tier: 2
+    title: Weight history by recency with an exponential decay
+    summary: >-
+      Weight each history interaction by exp(-lambda * days_before_target) when pooling,
+      tuning lambda on validation. Interest drifts across the two-week train window, and a
+      flat mean treats a fourteen-day-old view as equal to yesterday's. Cheap to add on top
+      of mean pooling.
+    citation: null
+    est_minutes: 12
+    prerequisites: [T2.mean-pooled-history]
+
+  - id: T2.user-author-affinity
+    tier: 2
+    title: Cross the user with the candidate's author using historical rate
+    summary: >-
+      Compute each user's historical long_view rate on the candidate video's author, with
+      Bayesian smoothing toward the global rate, and add it as a feature. Authors are the
+      strongest repeat-affinity signal in short-video feeds, and this is a genuine
+      user x item cross rather than a user-side constant.
+    citation: null
+    est_minutes: 15
+    prerequisites: [T0.reproduce-fm]
+
+  - id: T2.short-long-history-split
+    tier: 2
+    title: Separate long-term and short-term interest representations
+    summary: >-
+      Build two user vectors — one from the full train history, one from only the last day
+      or two — and give the model both. Long-term captures stable taste, short-term
+      captures the current session's drift; the SIM line of work shows the split beats a
+      single pooled representation.
+    citation: "Pi et al., Search-based User Interest Modeling (SIM), CIKM 2020, arXiv:2006.05639"
+    est_minutes: 30
+    prerequisites: [T2.din-target-attention]
+
+  - id: T2.sequence-gru
+    tier: 2
+    title: Encode the history as an ordered sequence with a small GRU
+    summary: >-
+      Feed the user's last 50 interactions in order through a one-layer GRU and use the
+      final hidden state as the user vector. Unlike pooling or attention this preserves
+      order, which matters when consumption is bursty. Expensive — only try it after
+      pooling and attention have both been measured.
+    citation: "Hidasi et al., Session-based Recommendations with Recurrent Neural Networks, ICLR 2016, arXiv:1511.06939"
+    est_minutes: 40
+    prerequisites: [T2.din-target-attention]
+
+# ---------------------------------------------------------------------------
+# T3 — multi-task and watch time.  Organisers' #3 and #4.
+# The logs carry 12 feedback signals; only long_view is scored.
+# ---------------------------------------------------------------------------
+  - id: T3.aux-feedback-heads
+    tier: 3
+    title: Add auxiliary prediction heads for the other feedback signals
+    summary: >-
+      Share the embedding table and add extra output heads predicting is_click, is_like,
+      is_follow, is_comment and is_forward alongside long_view. Train all heads jointly with
+      equal weight but score only the long_view head. The auxiliary labels regularise the
+      shared embeddings with signal the main task never sees.
+    citation: "Caruana, Multitask Learning, Machine Learning 28, 1997"
+    est_minutes: 25
+    prerequisites: [T0.reproduce-fm]
+
+  - id: T3.play-time-auxiliary
+    tier: 3
+    title: Add play_time_ms regression as an auxiliary task
+    summary: >-
+      Add a head regressing log(1 + play_time_ms) next to the long_view classifier, sharing
+      embeddings. Watch time is a dense, graded signal where long_view is a coarse
+      threshold on the same underlying behaviour, so it carries strictly more information
+      per row.
+    citation: null
+    est_minutes: 20
+    prerequisites: [T3.aux-feedback-heads]
+
+  - id: T3.mmoe
+    tier: 3
+    title: Route the multi-task heads through a mixture of experts
+    summary: >-
+      Replace the single shared bottom with several expert MLPs plus a per-task softmax
+      gate that mixes them. This lets conflicting tasks (a like and a long view want
+      different things) use different experts instead of fighting over one shared trunk —
+      the seesaw problem. Only worth trying once plain auxiliary heads have shown a gain.
+    citation: "Ma et al., Modeling Task Relationships in Multi-task Learning with Multi-gate Mixture-of-Experts, KDD 2018"
+    est_minutes: 40
+    prerequisites: [T3.aux-feedback-heads]
+
+  - id: T3.ple
+    tier: 3
+    title: Split experts into shared and task-specific groups (PLE)
+    summary: >-
+      Give each task its own private experts in addition to the shared pool, so
+      task-specific signal never has to pass through parameters another task is also pulling
+      on. PLE was shown to beat MMoE precisely where task conflict is strong. Try only if
+      MMoE helps but plateaus.
+    citation: "Tang et al., Progressive Layered Extraction (PLE), RecSys 2020 (best paper)"
+    est_minutes: 45
+    prerequisites: [T3.mmoe]
+
+  - id: T3.cwm-censored-watchtime
+    tier: 3
+    title: Model watch time as censored regression rather than squared error
+    summary: >-
+      When a video plays to completion the true watch time is truncated by video length, so
+      squared error on the observed value is biased. Use a one-sided loss that only
+      penalises predictions below the observed time for completed plays. Port the idea, not
+      the repo — CWM needs torch==1.6.0 and rebuilds its own label.
+    citation: "Zhao et al., Counteracting Duration Bias in Video Recommendation via Counterfactual Watch Time, KDD 2024, https://github.com/hyz20/CWM"
+    est_minutes: 40
+    prerequisites: [T3.play-time-auxiliary]
+
+  - id: T3.duration-conditional-debias
+    tier: 3
+    title: Normalise the label or score within duration buckets
+    summary: >-
+      Long videos are mechanically less likely to be long-viewed, so raw long_view conflates
+      interest with duration. Fit the model on a duration-bucket-conditional target — or
+      subtract the bucket's mean rate from the score — so it ranks on interest rather than
+      length. dur_bucket already exists in the feature set.
+    citation: "Zhan et al., Deconfounding Duration Bias in Watch-time Prediction, KDD 2022, arXiv:2206.06003"
+    est_minutes: 25
+    prerequisites: [T0.reproduce-fm]
+
+# ---------------------------------------------------------------------------
+# T4 — architecture, time, validation, ensembling.  Organisers' #5-#7.
+# DELIBERATELY LAST.  Capacity was measured not to be the bottleneck, so a bigger
+# model is the least promising of the open directions despite being the obvious one.
+# ---------------------------------------------------------------------------
+  - id: T4.deepfm
+    tier: 4
+    title: Add an MLP branch alongside the FM interactions (DeepFM)
+    summary: >-
+      Concatenate the field embeddings into an MLP and add its output to the FM score,
+      giving explicit second-order and implicit higher-order interactions in one model.
+      Deprioritised: embedding capacity was measured flat, so expect a small gain at best
+      unless the loss and sequence work has already landed.
+    citation: "Guo et al., DeepFM, IJCAI 2017, arXiv:1703.04247"
+    est_minutes: 30
+    prerequisites: [T0.reproduce-fm]
+
+  - id: T4.dcn-v2
+    tier: 4
+    title: Replace FM interactions with explicit cross layers (DCN-v2)
+    summary: >-
+      Stack low-rank cross layers that build explicit bounded-degree feature crosses, in
+      place of the fixed second-order FM term. More expressive at similar parameter count.
+      Same caveat as DeepFM — architecture is the organisers' #5, below loss and sequences.
+    citation: "Wang et al., DCN V2, WWW 2021, arXiv:2008.13535"
+    est_minutes: 35
+    prerequisites: [T4.deepfm]
+
+  - id: T4.gbdt-on-crosses
+    tier: 4
+    title: Train LightGBM on engineered cross features and blend with FM
+    summary: >-
+      Materialise the user-item cross features (author affinity, category affinity, item
+      CTR priors, duration bucket, history counts) into a dense matrix and fit LightGBM
+      with a ranking objective grouped by user. Blend its ranks with the FM ranks. GBDT
+      plus an embedding model is the classic strong pairing on tabular CTR data.
+    citation: "Ke et al., LightGBM, NIPS 2017"
+    est_minutes: 35
+    prerequisites: [T2.user-author-affinity]
+
+  - id: T4.rank-ensemble
+    tier: 4
+    title: Blend several models by averaging within-user ranks
+    summary: >-
+      Convert each model's scores to within-user ranks, average the ranks with weights
+      tuned on validation, and submit the blend. Rank averaging is scale-free, which matters
+      because only relative order is scored and different losses produce wildly different
+      score scales. Reliable end-of-run gain once two or three distinct models exist.
+    citation: null
+    est_minutes: 15
+    prerequisites: [T1.bpr-pairwise, T4.deepfm]
+
+  - id: T4.time-features
+    tier: 4
+    title: Add time-of-day and day-of-week crossed with the item side
+    summary: >-
+      Bucket hourmin into time-of-day slots and cross it with video category or author,
+      rather than adding it alone. Consumption patterns differ between a commute and late
+      evening. Note that a time feature constant across a user's impressions contributes
+      nothing — the cross is what makes it vary within the user.
+    citation: null
+    est_minutes: 15
+    prerequisites: [T0.reproduce-fm]
+
+  - id: T4.recency-weighted-training
+    tier: 4
+    title: Upweight recent training days to counter distribution drift
+    summary: >-
+      Weight each training row by exp(-lambda * days_before_validation_start). Train covers
+      08-21 April and test runs 29 April to 08 May, so the newest training data is closest
+      to what we are scored on. One extra term in the loss, tuned on validation.
+    citation: null
+    est_minutes: 10
+    prerequisites: [T0.reproduce-fm]
+
+  - id: T4.unbiased-validation-random-log
+    tier: 4
+    title: Use the random-exposure log as an unbiased validation check
+    summary: >-
+      log_random_4_22_to_5_08_pure.csv holds 1.18M randomly-exposed impressions and ships
+      unused in the same download. Score candidate models on it as a second validation
+      signal to detect models that only fit biased traffic. A diagnostic, not a training
+      set — do not train on it.
+    citation: "Gao et al., KuaiRand, CIKM 2022, arXiv:2208.08696"
+    est_minutes: 20
+    prerequisites: [T0.reproduce-fm]
+
+  - id: T4.calibration-per-user
+    tier: 4
+    title: Rescale scores per user before blending
+    summary: >-
+      Standardise each user's scores to zero mean and unit variance before any ensembling
+      step. Users differ a lot in impression count and positive rate, so an unnormalised
+      blend is dominated by whichever user happens to have the widest score spread. No
+      effect on a single model, meaningful effect on a blend.
+    citation: null
+    est_minutes: 10
+    prerequisites: [T4.rank-ensemble]

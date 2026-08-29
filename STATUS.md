@@ -49,7 +49,7 @@ train 1,141,112 / valid 124,909 / test 170,588.
 ## D — ML Researcher: Method, Knowledge & Story
 
 - [ ] `system.md` + `draft.md` + `improve.md` + `repair.md`
-- [ ] idea bank entries: 0 / 30
+- [x] idea bank entries: 32 / 30 (seeded on branch `feat/d-idea-bank`, retiered per starter-kit findings)
 - [ ] reference pipeline beats baseline
 - [ ] Devpost draft
 - now:
