@@ -136,13 +136,13 @@ PROPOSAL_TOOL = {
 class Agent:
     """Turns a Context into a Proposal. One LLM call per node, no personas."""
 
-    def __init__(self, client=None, *, model: str = DEFAULT_MODEL,
+    def __init__(self, client=None, *, model: str | None = None,
                  max_tokens: int = DEFAULT_MAX_TOKENS,
                  on_usage: Callable[[str, Usage], None] | None = None,
                  on_recovery: Callable[[dict], None] | None = None,
                  prompt_dir: Path | None = None):
         self.client = client if client is not None else make_client()
-        self.model = model
+        self.model = model or default_model_for(self.client)
         self.max_tokens = max_tokens
         self.on_usage = on_usage
         self.on_recovery = on_recovery            # API retries: a recovery, not an intervention
@@ -316,18 +316,152 @@ def repair_exhausted(node: Node) -> bool:
 # clients
 # --------------------------------------------------------------------------- #
 
-def make_client(*, api_key: str | None = None):
-    """Real client unless the environment asks for the stub. `smoke` mode runs
-    stubbed so CI needs no key and costs nothing."""
-    if os.environ.get("TECHJAM_LLM", "").lower() == "stub":
+def make_client(*, api_key: str | None = None, provider: str | None = None):
+    """Return an LLM client. Provider order: explicit argument, then TECHJAM_LLM,
+    then whichever key is in the environment.
+
+    The rest of this module speaks one shape — Anthropic's Messages API — and
+    `OpenAIClient` adapts to it. Nothing above this line knows which provider is
+    live, which is also our fallback if one of them starts rate-limiting us
+    halfway through the scored run.
+    """
+    choice = (provider or os.environ.get("TECHJAM_LLM") or "").lower()
+    if choice == "stub":
         return StubClient()
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        raise AgentError(
-            "ANTHROPIC_API_KEY is not set. Export it, or set TECHJAM_LLM=stub "
-            "to run against the stub client.")
-    import anthropic
-    return anthropic.Anthropic(api_key=key, max_retries=0)   # we own the retry policy
+    if not choice:
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            choice = "anthropic"
+        elif os.environ.get("OPENAI_API_KEY"):
+            choice = "openai"
+        else:
+            raise AgentError(
+                "No LLM key found. Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or set "
+                "TECHJAM_LLM=stub to run against the stub client.")
+
+    if choice == "anthropic":
+        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        if not key:
+            raise AgentError("TECHJAM_LLM=anthropic but ANTHROPIC_API_KEY is not set.")
+        import anthropic
+        return anthropic.Anthropic(api_key=key, max_retries=0)  # we own the retry policy
+    if choice == "openai":
+        key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise AgentError("TECHJAM_LLM=openai but OPENAI_API_KEY is not set.")
+        import openai
+        return OpenAIClient(openai.OpenAI(api_key=key, max_retries=0))
+    raise AgentError(f"unknown provider {choice!r}; expected anthropic, openai or stub")
+
+
+def default_model_for(client) -> str:
+    """The model id to use when none was configured."""
+    if isinstance(client, StubClient):
+        return "stub"
+    if isinstance(client, OpenAIClient):
+        model = os.environ.get("TECHJAM_MODEL")
+        if not model:
+            raise AgentError(
+                "Using the OpenAI provider, so TECHJAM_MODEL must name the model "
+                "explicitly — I will not guess a model id and discover it is wrong "
+                "four hours into a scored run. List what your key can reach with:\n"
+                "  python -c \"import openai; "
+                "print(sorted(m.id for m in openai.OpenAI().models.list()))\"")
+        return model
+    return os.environ.get("TECHJAM_MODEL", DEFAULT_MODEL)
+
+
+class OpenAIClient:
+    """Presents OpenAI chat completions in the Anthropic Messages shape.
+
+    Two differences are load-bearing rather than cosmetic:
+
+    * **Token accounting.** Anthropic reports `input_tokens` *excluding* cache reads,
+      so the billed input is the sum of three fields. OpenAI's `prompt_tokens`
+      *includes* `cached_tokens`. Summing the same way on both would double-count
+      every cached token and overstate a scored deliverable, so we subtract here and
+      `Usage.tokens_in` stays exact for both providers.
+    * **Prompt caching.** Anthropic caches where we put a `cache_control` marker.
+      OpenAI caches automatically on the longest matching prefix above a length
+      threshold, with nothing to declare. Our static block is already first and byte
+      identical across calls, so it benefits either way; the marker is simply dropped.
+    """
+
+    def __init__(self, client):
+        self._client = client
+
+    @property
+    def messages(self):
+        return self
+
+    def create(self, *, model, max_tokens, temperature, system, messages,
+               tools, tool_choice, **_ignored):
+        completion = self._client.chat.completions.create(
+            model=model,
+            max_completion_tokens=max_tokens,
+            temperature=temperature,
+            messages=[{"role": "system", "content": _flatten_system(system)}, *messages],
+            tools=[_as_openai_tool(t) for t in tools],
+            tool_choice={"type": "function",
+                         "function": {"name": tool_choice["name"]}},
+        )
+        return _AdaptedMessage(
+            content=_as_tool_use_blocks(completion),
+            usage=_as_anthropic_usage(completion.usage),
+        )
+
+
+@dataclass
+class _ToolUseBlock:
+    name: str
+    input: dict
+    type: str = "tool_use"
+
+
+@dataclass
+class _AdaptedMessage:
+    content: list
+    usage: Usage
+
+
+def _flatten_system(system) -> str:
+    """The cached static block, as a plain string. `cache_control` is Anthropic-only."""
+    if isinstance(system, str):
+        return system
+    return "\n\n".join(block["text"] for block in system)
+
+
+def _as_openai_tool(tool: dict) -> dict:
+    return {"type": "function",
+            "function": {"name": tool["name"], "description": tool["description"],
+                         "parameters": tool["input_schema"]}}
+
+
+def _as_tool_use_blocks(completion) -> list:
+    """Returns [] when the model replied in prose, which the caller retries."""
+    choices = getattr(completion, "choices", None) or []
+    if not choices:
+        return []
+    for call in getattr(choices[0].message, "tool_calls", None) or []:
+        try:
+            payload = json.loads(call.function.arguments)
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if isinstance(payload, dict):
+            return [_ToolUseBlock(name=call.function.name, input=payload)]
+    return []
+
+
+def _as_anthropic_usage(usage) -> Usage:
+    prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached = int(getattr(details, "cached_tokens", 0) or 0)
+    return Usage(
+        input_tokens=prompt - cached,        # OpenAI counts cached inside prompt_tokens
+        output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+        cache_creation_input_tokens=0,       # automatic caching has no write cost
+        cache_read_input_tokens=cached,
+        calls=1,
+    )
 
 
 @dataclass

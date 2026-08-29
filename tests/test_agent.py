@@ -2,6 +2,7 @@
 output, and the retry/repair behaviour that keeps a six-hour run alive."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -376,3 +377,181 @@ class TestStubClient:
                         data_dir=data, mem_limit_mb=1024)
         assert r.ok, (r.error_class, r.error_excerpt)
         assert r.result_json["n_rows"] == 3
+
+
+# --------------------------------------------------------------------------- #
+# provider adapter
+# --------------------------------------------------------------------------- #
+
+class FakeOpenAIUsage:
+    def __init__(self, prompt, completion, cached=0):
+        self.prompt_tokens, self.completion_tokens = prompt, completion
+        self.prompt_tokens_details = type("D", (), {"cached_tokens": cached})()
+
+
+class FakeOpenAICompletion:
+    def __init__(self, arguments, usage, name="submit_pipeline"):
+        call = type("C", (), {"function": type("F", (), {
+            "name": name, "arguments": arguments})()})()
+        message = type("M", (), {"tool_calls": [call] if arguments is not None else None})()
+        self.choices = [type("Ch", (), {"message": message})()]
+        self.usage = usage
+
+
+class FakeOpenAISDK:
+    """Stands in for openai.OpenAI(). Records what the adapter sent."""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = []
+
+    @property
+    def chat(self):
+        return self
+
+    @property
+    def completions(self):
+        return self
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def openai_agent(script):
+    from orchestrator.agent import OpenAIClient
+    sdk = FakeOpenAISDK(script)
+    return Agent(OpenAIClient(sdk), model="test-model"), sdk
+
+
+class TestOpenAIAdapter:
+    def ok_completion(self, **usage_kw):
+        return FakeOpenAICompletion(
+            json.dumps(GOOD_PAYLOAD),
+            FakeOpenAIUsage(**{"prompt": 1000, "completion": 200, **usage_kw}))
+
+    def test_proposal_comes_through_the_adapter_unchanged(self, ctx):
+        a, _ = openai_agent([self.ok_completion()])
+        p = a.draft(ctx)
+        assert p.hypothesis.startswith("Active users dominate")
+        assert p.plan == ["add the prior", "retrain", "write submission"]
+        assert p.model == "test-model"
+
+    def test_cached_tokens_are_not_double_counted(self, ctx):
+        """OpenAI counts cached tokens inside prompt_tokens; Anthropic reports them
+        separately. Summing both the same way would overstate a scored deliverable."""
+        a, _ = openai_agent([self.ok_completion(prompt=1000, cached=800)])
+        p = a.draft(ctx)
+        assert p.tokens_in == 1000, "tokens_in must equal the API's own prompt_tokens"
+        assert a.total.cache_read_input_tokens == 800
+        assert a.total.input_tokens == 200
+
+    def test_uncached_call_accounts_the_same(self, ctx):
+        a, _ = openai_agent([self.ok_completion(prompt=1000, cached=0)])
+        assert a.draft(ctx).tokens_in == 1000
+
+    def test_system_block_is_flattened_and_cache_control_dropped(self, ctx):
+        a, sdk = openai_agent([self.ok_completion()])
+        a.draft(ctx)
+        messages = sdk.calls[0]["messages"]
+        assert messages[0]["role"] == "system"
+        assert isinstance(messages[0]["content"], str)
+        assert "kuairand-pure" in messages[0]["content"]
+        assert "cache_control" not in json.dumps(sdk.calls[0])
+        assert messages[1]["role"] == "user"
+
+    def test_static_prefix_still_comes_first(self, ctx):
+        """OpenAI caches the longest matching prefix automatically, so the static
+        block leading the request is what makes caching work at all."""
+        a, sdk = openai_agent([self.ok_completion(), self.ok_completion()])
+        a.draft(ctx)
+        ctx.parent_code = "print(1)\n"
+        a.improve(ctx, node())
+        first, second = (c["messages"][0]["content"] for c in sdk.calls)
+        assert first == second
+
+    def test_tool_schema_is_translated(self, ctx):
+        a, sdk = openai_agent([self.ok_completion()])
+        a.draft(ctx)
+        tool = sdk.calls[0]["tools"][0]
+        assert tool["type"] == "function"
+        assert tool["function"]["name"] == "submit_pipeline"
+        assert tool["function"]["parameters"]["required"] == ["hypothesis", "plan", "code"]
+        assert sdk.calls[0]["tool_choice"] == {
+            "type": "function", "function": {"name": "submit_pipeline"}}
+
+    def test_uses_max_completion_tokens(self, ctx):
+        a, sdk = openai_agent([self.ok_completion()])
+        a.draft(ctx)
+        assert sdk.calls[0]["max_completion_tokens"] == agent_mod.DEFAULT_MAX_TOKENS
+        assert "max_tokens" not in sdk.calls[0]
+
+    def test_prose_reply_is_retried_like_any_other(self, ctx):
+        prose = FakeOpenAICompletion(None, FakeOpenAIUsage(50, 10))
+        recoveries = []
+        from orchestrator.agent import OpenAIClient
+        sdk = FakeOpenAISDK([prose, self.ok_completion()])
+        a = Agent(OpenAIClient(sdk), model="test-model", on_recovery=recoveries.append)
+        assert a.draft(ctx).hypothesis
+        assert recoveries[0]["recovery"] == "no_tool_use"
+
+    def test_unparseable_tool_arguments_are_retried_not_crashed(self, ctx):
+        broken = FakeOpenAICompletion("{not json", FakeOpenAIUsage(50, 10))
+        a, _ = openai_agent([broken, self.ok_completion()])
+        assert a.draft(ctx).hypothesis
+
+    def test_rate_limits_retry_through_the_adapter(self, ctx):
+        a, sdk = openai_agent([Rate429(), self.ok_completion()])
+        assert a.draft(ctx).hypothesis
+        assert len(sdk.calls) == 2
+
+
+class TestProviderSelection:
+    def test_anthropic_key_wins_when_both_are_present(self, monkeypatch):
+        monkeypatch.delenv("TECHJAM_LLM", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-x")
+        client = agent_mod.make_client()
+        assert type(client).__name__ == "Anthropic"
+
+    def test_falls_back_to_openai_when_that_is_the_only_key(self, monkeypatch):
+        monkeypatch.delenv("TECHJAM_LLM", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-x")
+        assert isinstance(agent_mod.make_client(), agent_mod.OpenAIClient)
+
+    def test_explicit_provider_overrides_the_environment(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-x")
+        assert isinstance(agent_mod.make_client(provider="openai"), agent_mod.OpenAIClient)
+
+    def test_no_key_at_all_names_both_options(self, monkeypatch):
+        monkeypatch.delenv("TECHJAM_LLM", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(AgentError, match="ANTHROPIC_API_KEY or OPENAI_API_KEY"):
+            agent_mod.make_client()
+
+    def test_unknown_provider_is_rejected(self, monkeypatch):
+        monkeypatch.setenv("TECHJAM_LLM", "llama")
+        with pytest.raises(AgentError, match="unknown provider"):
+            agent_mod.make_client()
+
+    def test_openai_model_must_be_named_not_guessed(self, monkeypatch):
+        """A wrong model id discovered four hours into a scored run is a lost run."""
+        monkeypatch.delenv("TECHJAM_MODEL", raising=False)
+        client = agent_mod.OpenAIClient(FakeOpenAISDK([]))
+        with pytest.raises(AgentError, match="TECHJAM_MODEL"):
+            agent_mod.default_model_for(client)
+
+    def test_openai_model_from_env(self, monkeypatch):
+        monkeypatch.setenv("TECHJAM_MODEL", "some-model")
+        client = agent_mod.OpenAIClient(FakeOpenAISDK([]))
+        assert agent_mod.default_model_for(client) == "some-model"
+
+    def test_anthropic_default_needs_no_configuration(self, monkeypatch):
+        monkeypatch.delenv("TECHJAM_MODEL", raising=False)
+        assert agent_mod.default_model_for(FakeClient([])) == agent_mod.DEFAULT_MODEL

@@ -33,8 +33,10 @@ H+60). Bullets, not prose.
   `Agent.draft/improve/repair(ctx, ...)`. `sandbox.run` also takes `data_dir=`,
   `mem_limit_mb=`, `python=`, `allow_network=` — all keyword-only with defaults, so
   the frozen signature still holds.
-- next: real-API shakedown once a key is on the box (everything so far is stubbed);
-  prompt-cache hit rate measured against the API's own usage numbers; token cap
+- [x] provider-agnostic client: Anthropic (default) + OpenAI adapter + stub, chosen
+  by which key is present. See `## Contract change proposed` — needs one ack.
+- next: real-API shakedown — still blocked, we have no *valid* key on the box. Then
+  prompt-cache hit rate measured against the API's own usage numbers, and token cap
   enforcement in `Context`.
 - blocked on: nothing. A's `run.py` gates the real `make smoke` (it currently reports
   PENDING rather than failing, so `main` stays green); C's `requirements-pipeline.txt`
@@ -105,7 +107,29 @@ Cross-team asks. Format: `A -> C: need X because Y`.
 
 ## Contract change proposed
 
-Nothing proposed. Format: what changes, why, who acked, when the old shape can go.
+Format: what changes, why, who acked, when the old shape can go.
+
+- **B: contracts.md §8 says "`ANTHROPIC_API_KEY` from env only". Widen it to
+  "`ANTHROPIC_API_KEY` or `OPENAI_API_KEY` from env only". Needs one ack.**
+  - *What changes:* nothing in code that anyone else touches. `agent.py` speaks one
+    shape — Anthropic's Messages API — and an `OpenAIClient` adapter translates. The
+    orchestrator never learns which provider is live. `make_client()` prefers an
+    Anthropic key, falls back to an OpenAI one, and `TECHJAM_LLM=anthropic|openai|stub`
+    overrides. The old shape keeps working unchanged and stays the default.
+  - *Why:* the key we have on the box right now is an OpenAI one, and being able to
+    switch providers without a code change is also a Robustness hedge — if one starts
+    throttling us during the 6-hour scored run, we move rather than lose the run.
+  - *One thing A must know for the accounting:* Anthropic reports `input_tokens`
+    *excluding* cache reads, so billed input is the sum of three fields. OpenAI's
+    `prompt_tokens` *includes* `cached_tokens`. Summing both the same way would
+    double-count every cached token and overstate a scored deliverable. `agent.py`
+    normalises at the adapter, so `Usage.tokens_in` equals what we are billed on
+    either provider — journal it directly and do not re-derive it.
+  - *Model id:* on Anthropic it defaults to `claude-opus-5`. On OpenAI, `TECHJAM_MODEL`
+    is **required** — `default_model_for()` raises rather than guess an id, because a
+    wrong one discovered four hours into a scored run is a lost run.
+  - *Acked by:* — (needs one)
+  - *Old shape can go:* never; both stay.
 
 ## Fault-injection results (B fills, D uses in the writeup)
 
