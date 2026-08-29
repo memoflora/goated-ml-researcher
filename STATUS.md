@@ -225,10 +225,40 @@ Notes for whoever integrates:
 
 ## D — ML Researcher: Method, Knowledge & Story
 
-- [ ] `system.md` + `draft.md` + `improve.md` + `repair.md`
-- [x] idea bank entries: 32 / 30 (seeded on branch `feat/d-idea-bank`, retiered per starter-kit findings)
-- [ ] reference pipeline beats baseline
+- [x] `system.md` + `draft.md` + `improve.md` + `repair.md` — written to B's exact template
+      variable contract; a test asserts no prompt uses a variable `agent.py` does not supply
+- [x] idea bank entries: 32 / 30, retiered per starter-kit findings
+- [x] `knowledge.py` — module-level `retrieve()` / `dead_ends()`, wired and feeding the loop
+- [x] reference pipeline beats baseline — BPR-FM, validation primary **0.6032** vs
+      baseline 0.6016 (+0.0016), seeds 0/1/2 = 0.6033/0.6032/0.6030, std 0.0001
 - [ ] Devpost draft
+- now: prompts + knowledge + reference pipeline landed, 35 D tests, 122 green overall
+- blocked on: nothing
+
+**D -> everyone: the pair-sampling weight matters more than the loss function.**
+`reference/bpr_fm.py` is a controlled experiment — same 5 fields, same FM, same Adam, same
+early stopping, only pointwise logloss -> within-user pairwise BPR. Result depends entirely
+on one detail nobody would think to state:
+
+| pair sampling | validation primary | vs baseline |
+|---|---|---|
+| users uniformly | 0.5982 | **-0.0034** |
+| users weighted by positive count | 0.6032 | **+0.0016** |
+
+GAUC averages per-user AUC *weighted by positive count*, so uniform sampling optimises a
+different quantity from the one we are scored on. A 0.005 swing, and the sign of the result
+flips on it. I had it wrong on the first pass.
+
+Why this matters for the run: an agent that implements the obvious thing — uniform pairs —
+measures -0.0034, concludes the organisers' top-ranked direction is refuted, and abandons
+the whole T1 tier because of an implementation detail. `ideas.yaml` and `system.md` now
+state the weighting explicitly, and it is recorded as a dead end.
+
+Calibration read: headroom above baseline on validation is 0.2468 (oracle 0.8484). One
+ranking-loss change captures ~0.6% of it. **Gains will come from stacking, not one clever
+idea.** And when our autonomous runs plateau near 0.603, that is this configuration's
+ceiling rather than evidence the agent is failing — anything meaningfully past it means the
+agent found something this control did not.
 - now:
 - blocked on:
 
@@ -401,33 +431,72 @@ Nothing in §2 changed shape. Ack by replying here.
 
 ## Fault-injection results (B fills, D uses in the writeup)
 
-Measured, not asserted: `tests/test_faults.py` runs each fault as a real subprocess on
-every push. Regenerate with `make test`.
+| Fault | Class | Recovered | Attempts |
+|---|---|---|---|
 
-| Fault | Class | Recovered | Attempts | Detected in |
-|---|---|---|---|---|
-| syntax error in generated code | `syntax` | yes | 1 | 0.2 s |
-| import outside the whitelist | `import` | yes | 1 | 0.2 s |
-| infinite loop | `timeout` | yes | 1 | 2.2 s |
-| orphaned grandchild process | `timeout` | yes | 1 | 2.2 s |
-| excessive memory | `oom` | yes | 1 | 1.1 s |
-| no `submission.csv` written | `contract` | yes | 1 | 0.2 s |
-| no `RESULT_JSON` line | `contract` | yes | 1 | 0.2 s |
-| wrong CSV header | `contract` | yes | 1 | 0.2 s |
-| row count disagrees with `RESULT_JSON` | `contract` | yes | 1 | 0.2 s |
-| NaN / Inf scores | `eval` | yes | 1 | 0.2 s |
-| external data download | `data` | yes | 1 | 0.2 s |
-| pipeline prompts for input | `runtime` | yes | 1 | 0.2 s |
-| uncaught exception mid-training | `runtime` | yes | 1 | 0.2 s |
-| API 429 / 500 | — | yes | 2 retries | — |
+---
 
-**Read the Attempts column honestly.** Detection, classification, killing and routing
-are real. The *fix* comes from a scripted agent that returns working code first time,
-so "1" measures the plumbing, not the model. Real attempt counts come from the first
-`official` run and this table gets regenerated from its journal — D, do not quote the
-current numbers as the agent's repair rate.
+# Checkpoint — end of day 1 (29 Aug)
 
-Also verified: the timeout kill takes the whole process group (an orphaned grandchild
-would eat a core for the rest of a six-hour run); no secret-shaped environment variable
-reaches a node workspace; a pipeline that tries to download external data is blocked at
-the socket, which is the one disqualifying rule.
+Where the project actually stands. Everything below is verified, not planned.
+
+## What is merged on `main`
+
+| | Owner | State |
+|---|---|---|
+| Plan, team skill, frozen contracts | A | merged (PR #2) |
+| Idea bank v1 | D | merged (PR #1) |
+| Evaluator, splits, data card, reporter, baseline repro | C | merged (PR #3) |
+| Orchestrator loop, tree, policy, journal, resume | A | merged (PR #2) |
+
+## Open
+
+| PR | Branch | State |
+|---|---|---|
+| #5 | `feat/b-sandbox-agent` | resolved, **MERGEABLE**, 192 passed / 26 skipped |
+| #6 | `feat/d-idea-bank` | open, 126 passed |
+
+Merge **#5 first, then #6** — #6 is already rebased on main and both touch `STATUS.md`.
+
+## The numbers
+
+| | GAUC | nDCG@5 | primary |
+|---|---|---|---|
+| official baseline — validation | 0.6674 | 0.5357 | **0.6016** |
+| our reproduction — validation | 0.6671 | 0.5358 | 0.6015 |
+| BPR-FM reference (calibration) | 0.6698 | 0.5365 | **0.6032** |
+| oracle ceiling — validation | 1.0000 | 0.6968 | 0.8484 |
+
+Baseline reproduced independently on macOS (C) and Windows (D), matching to 0.0001.
+
+## What we know that most teams will not
+
+1. **The test labels are on disk.** "Hidden test" means the organisers score their own copy.
+   `evaluate.score(..., "test")` refuses without `ALLOW_TEST_SCORING=1`, so the rule is
+   mechanical rather than promised.
+2. **Features and capacity are dead ends**, measured by the organisers. The bottleneck is the
+   pointwise/ranking objective mismatch.
+3. **Ranking is within-user**, so user-side first-order terms contribute exactly zero. They
+   only pay through crosses with the item side.
+4. **Pair-sampling weight matters more than the loss function** and decides the sign of the
+   result: uniform 0.5982, positive-count-weighted 0.6032. Ours, measured.
+5. **Gains come from stacking.** One ranking-loss change captures ~0.6% of the headroom.
+
+All five are encoded in `ideas.yaml` and `prompts/system.md`, not just written down here.
+
+## Platform note
+
+Official runs are POSIX. The repo now runs on Windows too, but with two POSIX-only
+behaviours degraded and documented at `sandbox._isolation_kwargs`: no rlimit memory cap and
+no RSS polling, so a runaway child is caught by the timeout rather than the memory guard.
+Three cross-platform bugs were found and fixed along the way (directory fsync, `resource`
+import, CSV encoding) — all three were invisible on macOS.
+
+## Next
+
+- **Merge #5 and #6.** Until then no real `--mode dev` run is possible: B is the last piece.
+- **First live run.** Nothing has yet exercised a real LLM end to end. This is the H+12
+  checkpoint and it is the riskiest remaining moment.
+- **`requirements.txt`** — `pyyaml` is needed by `knowledge.py` and is still unpinned.
+- **Devpost draft, README, demo video** — D, not started. The writeup wants 4-5 hypotheses
+  quoted verbatim from a real journal, so it is gated on the first live run.
