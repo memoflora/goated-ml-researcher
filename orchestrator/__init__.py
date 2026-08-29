@@ -1,5 +1,4 @@
 """Autonomous ML research agent for KuaiRand-Pure (TechJam 2026, Track 2)."""
-
 import sys
 
 if sys.version_info < (3, 10):  # noqa: UP036 # pragma: no cover - a clear message beats a traceback
