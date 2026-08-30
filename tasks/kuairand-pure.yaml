@@ -1,0 +1,64 @@
+# The competition task, expressed as configuration rather than as constants in the code.
+#
+# Nothing here changes how KuaiRand is scored: `loader: starter_kit` routes loading and
+# metrics through `vendor/starter_kit/`, which stays the sole authority on the organisers'
+# conventions. This file exists so the *rest* of the orchestrator can stop hardcoding the
+# dataset, and so a second task is a new file rather than a patch.
+
+name: kuairand-pure
+kind: ranking
+
+description: |
+  Rank the videos shown to each user by how likely that user is to watch one for a long
+  time. Each row is one impression from a short-video feed: a (user, video) pair that was
+  actually served, with the feedback it received. The label `long_view` is 1 when the user
+  watched long enough to count as a long view.
+
+  Scoring is within-user: a user's own impressions are ranked against each other, and there
+  is no retrieval over a catalogue. A term that is constant inside a user therefore cannot
+  change that user's ordering.
+
+  Development uses train and validation only. The test period is held out and scored once.
+
+data:
+  loader: starter_kit          # use the organisers' data.load() so row order is authoritative
+  dir: data/KuaiRand-Pure/data
+  target: long_view
+  group: user_id
+  id_columns: [user_id, video_id]
+  split:
+    strategy: date
+    date_column: date
+    ranges:
+      train: [20220408, 20220421]
+      valid: [20220422, 20220428]
+      test:  [20220429, 20220508]
+
+submission:
+  columns: [row_id, user_id, video_id, score]
+  prediction_column: score
+
+# This task has a hand-written bank with measured dead ends. Other tasks fall back
+# to tasks/ideas/generic-tabular.yaml, which claims nothing about any dataset.
+ideas: orchestrator/ideas.yaml
+
+metrics:
+  primary: [gauc, ndcg@5]
+  report:  [gauc, ndcg@5]
+
+baseline:
+  valid: {gauc: 0.6674, "ndcg@5": 0.5357, primary: 0.6016}
+  test:  {gauc: 0.6610, "ndcg@5": 0.5282, primary: 0.5946}
+
+# A perfect ranking reaches 0.8645, not 1.0 — 27.1% of test users have no positive label,
+# so their nDCG is 0 for any model. Progress is read against this, never against 1.0.
+ceiling: 0.8645
+
+# Five-seed standard deviation of the official baseline. A gain smaller than this is noise.
+seed_std: 0.0008
+
+limits:
+  max_iters: 50
+  wall_clock_s: 21600
+  conv_eps: 0.002
+  conv_n: 3

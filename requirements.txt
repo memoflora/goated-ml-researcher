@@ -8,3 +8,13 @@ anthropic==0.51.0
 openai==1.66.5
 pytest==8.3.4
 ruff==0.9.6
+
+# Added by C after the first real run — both were missing and both failed silently.
+# pyyaml: knowledge.py could not load ideas.yaml, so D's entire idea bank was absent
+#   from every prompt and 15 tests failed.
+# matplotlib: report.py's write_trajectory_png() returns False when it cannot import,
+#   so trajectory.png — the headline chart — was never written and nothing said so.
+# pandas: datacard.py's compute_stats() imports it to build the card from the CSVs.
+matplotlib==3.10.0
+pandas==2.2.3
+pyyaml==6.0.2

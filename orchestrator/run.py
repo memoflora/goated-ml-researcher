@@ -43,18 +43,68 @@ def parse_duration(text: str) -> int:
 
 
 def build_task(args: argparse.Namespace, cfg: dict) -> TaskSpec:
+    """Build the run's `TaskSpec`, from `tasks/<name>.yaml` when one exists.
+
+    Falling back to the hardcoded KuaiRand constants keeps every old invocation and every
+    stubbed test working even with no task file present — `make check` must stay green
+    without a dataset on disk.
+    """
+    # Precedence: an explicit flag wins, then the mode, then the task file.
+    #
+    # The mode has to beat the task here. `smoke` and `dev` exist precisely to be small
+    # and fast whatever the task claims it needs — letting a task's `max_iters: 50` leak
+    # into a smoke run turns `make check` into a 50-iteration job. Only `official` takes
+    # its ceiling from the task, which is where a per-task budget actually belongs.
+    max_iters = args.max_iters if args.max_iters is not None else cfg["max_iters"]
+    wall_clock_s = (
+        parse_duration(args.wall_clock) if args.wall_clock is not None else cfg["wall_clock_s"]
+    )
+    task_sets_limits = args.mode == "official" and args.max_iters is None
+
+    tc = None
+    try:
+        from orchestrator.taskspec import TaskConfigError, load_task
+
+        tc = load_task(args.task)
+    except TaskConfigError as exc:
+        # A *malformed* task file is a real error and must not be silently ignored; a
+        # simply absent one is fine, that is the legacy path.
+        if "no task file at" not in str(exc):
+            raise SystemExit(f"task config error: {exc}") from None
+    except ImportError:
+        pass
+
+    if tc is None:
+        return TaskSpec(
+            name=args.task,
+            data_dir=Path(args.data_dir),
+            metrics=("gauc", "ndcg@5"),
+            baseline_val=dict(BASELINE_VAL),
+            baseline_test=dict(BASELINE_TEST),
+            max_iters=max_iters,
+            wall_clock_s=wall_clock_s,
+        )
+
     return TaskSpec(
-        name=args.task,
-        data_dir=Path(args.data_dir),
-        metrics=("gauc", "ndcg@5"),
-        baseline_val=dict(BASELINE_VAL),
-        baseline_test=dict(BASELINE_TEST),
-        max_iters=args.max_iters if args.max_iters is not None else cfg["max_iters"],
+        name=tc.name,
+        data_dir=Path(args.data_dir) if args.data_dir_explicit else tc.data.dir,
+        metrics=tc.report_metrics,
+        baseline_val=dict(tc.baseline_val),
+        baseline_test=dict(tc.baseline_test),
+        ceiling=tc.ceiling,
+        max_iters=tc.max_iters if task_sets_limits else max_iters,
         wall_clock_s=(
-            parse_duration(args.wall_clock)
-            if args.wall_clock is not None
-            else cfg["wall_clock_s"]
+            tc.wall_clock_s if task_sets_limits and args.wall_clock is None else wall_clock_s
         ),
+        conv_eps=tc.conv_eps,
+        conv_n=tc.conv_n,
+        kind=tc.kind,
+        description=tc.description,
+        primary_parts=tc.primary_parts,
+        submission_columns=tc.submission_columns,
+        prediction_column=tc.prediction_column,
+        seed_std=tc.seed_std,
+        config=tc,
     )
 
 
@@ -108,15 +158,28 @@ def resolve_components(args: argparse.Namespace) -> tuple[Any, Any, Any, Any, An
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         prog="python -m orchestrator.run",
-        description="Run the autonomous ML research agent on KuaiRand-Pure.",
+        description=(
+            "Run the autonomous ML research agent on a task. --task names a file in "
+            "tasks/ (or a path to one); see tasks/kuairand-pure.yaml for the shape."
+        ),
     )
-    ap.add_argument("--task", default="kuairand-pure")
+    ap.add_argument(
+        "--task",
+        default="kuairand-pure",
+        help="task name in tasks/, or a path to a task YAML file",
+    )
+    ap.add_argument(
+        "--list-tasks",
+        action="store_true",
+        help="print the tasks defined in tasks/ and exit",
+    )
     ap.add_argument("--mode", choices=sorted(MODES), default="smoke")
     ap.add_argument("--max-iters", type=int, default=None)
     ap.add_argument("--wall-clock", default=None, help="e.g. 6h, 90m, 3600s")
     ap.add_argument("--resume", metavar="RUN_ID", default=None)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--data-dir", default="data/kuairand-pure")
+    # Default is None so we can tell "user chose a directory" from "use the task's".
+    ap.add_argument("--data-dir", default=None)
     ap.add_argument("--runs-dir", default="runs")
     ap.add_argument("--subsample", type=float, default=None)
     ap.add_argument("--timeout", type=int, default=None, help="per-pipeline timeout, seconds")
@@ -125,6 +188,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--sandbox", choices=("auto", "stub"), default=None)
     ap.add_argument("--evaluator", choices=("auto", "stub"), default=None)
     args = ap.parse_args(argv)
+    args.data_dir_explicit = args.data_dir is not None
+    if args.data_dir is None:
+        args.data_dir = "data/kuairand-pure"
     # smoke pins every seam to a stub; every other mode prefers the real module.
     default_source = "stub" if args.mode == "smoke" else "auto"
     for seam in ("agent", "sandbox", "evaluator"):
@@ -135,6 +201,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+
+    if args.list_tasks:
+        from orchestrator.taskspec import TASKS_DIR, available_tasks, load_task
+
+        names = available_tasks()
+        if not names:
+            print(f"no task files in {TASKS_DIR}")
+            return 1
+        for name in names:
+            try:
+                t = load_task(name)
+                first = (t.description.strip().splitlines() or [""])[0]
+                print(f"{name:24} {t.kind:12} primary={','.join(t.primary_parts):18} {first[:60]}")
+            except Exception as exc:  # noqa: BLE001 - report, do not crash the listing
+                print(f"{name:24} <invalid: {exc}>")
+        return 0
+
     cfg = MODES[args.mode]
     run_id = args.resume or new_run_id(runs_dir=args.runs_dir)
     run_dir = Path(args.runs_dir) / run_id

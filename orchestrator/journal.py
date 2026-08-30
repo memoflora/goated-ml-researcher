@@ -64,7 +64,7 @@ def _scrub(value: Any, _depth: int = 0) -> Any:
     """Make `value` JSON-safe, secret-free and bounded."""
     if _depth > 6:
         return str(value)[:_MAX_STR]
-    if value is None or isinstance(value, (bool, int)):
+    if value is None or isinstance(value, bool | int):
         return value
     if isinstance(value, float):
         # NaN/Inf are not valid JSON.
@@ -81,7 +81,7 @@ def _scrub(value: Any, _depth: int = 0) -> Any:
         return _scrub(asdict(value), _depth + 1)
     if isinstance(value, dict):
         return {str(k): _scrub(v, _depth + 1) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return [_scrub(v, _depth + 1) for v in value]
     return _scrub(str(value), _depth + 1)
 

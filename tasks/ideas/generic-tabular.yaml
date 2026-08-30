@@ -1,0 +1,254 @@
+# Default idea bank for a task that has not been given one of its own.
+#
+# Deliberately domain-free: everything here applies to any supervised table. It exists so
+# that pointing the agent at a new dataset produces sensible first moves instead of either
+# nothing at all or — far worse — another problem's conclusions. A serious new task should
+# still get a hand-written bank; this is the floor, not the ceiling.
+#
+# Tiering follows what usually pays on tabular problems, in order:
+#   T0 a trustworthy baseline    T1 the loss and the validation scheme
+#   T2 features                  T3 model class and capacity
+#   T4 ensembling and calibration
+
+dead_ends: []          # nothing has been measured on an unknown dataset yet
+
+ideas:
+  # -------------------------------------------------------------------------
+  # T0 — get something correct on the board
+  # -------------------------------------------------------------------------
+  - id: T0.constant-baseline
+    tier: 0
+    title: Predict the training mean (or majority class)
+    summary: >-
+      Emit a single constant for every row: the train target mean for regression, the
+      majority class rate for classification. It takes a minute, and it is the number every
+      later iteration has to beat. If a model cannot beat it, the model is broken, not
+      subtle.
+    citation: null
+    est_minutes: 3
+    prerequisites: []
+
+  - id: T0.linear-baseline
+    tier: 0
+    title: A regularised linear model on encoded columns
+    summary: >-
+      One-hot the low-cardinality categoricals, standardise the numerics, median-impute the
+      missing values, and fit ridge or logistic regression. Fast, hard to get wrong, and it
+      tells you how much of the signal is simply linear before anything clever is tried.
+    citation: null
+    est_minutes: 10
+    prerequisites: [T0.constant-baseline]
+
+  - id: T0.honest-validation
+    tier: 0
+    title: Confirm the validation split matches how the score is computed
+    summary: >-
+      Before trusting any number, check that features are computed on train alone, that no
+      row of validation leaks into fitting, and that the split respects any grouping or time
+      ordering the data card mentions. A validation score that is far above the eventual
+      held-out score almost always traces back to this.
+    citation: null
+    est_minutes: 10
+    prerequisites: []
+
+  - id: T0.drop-flagged-columns
+    tier: 0
+    title: Remove the columns the data card flagged as constant or leakage-grade
+    summary: >-
+      A constant column adds parameters and no signal. A column correlating almost perfectly
+      with the target is nearly always a copy of it or something recorded after the outcome,
+      and using it produces a spectacular validation score and a worthless model. Drop both,
+      and say in the hypothesis which ones and why.
+    citation: null
+    est_minutes: 5
+    prerequisites: []
+
+  # -------------------------------------------------------------------------
+  # T1 — align the objective with the metric
+  # -------------------------------------------------------------------------
+  - id: T1.optimise-the-scored-metric
+    tier: 1
+    title: Train the loss that matches the metric
+    summary: >-
+      Fit the objective the task is graded on rather than a convenient proxy — absolute
+      error when MAE is scored, a ranking objective when a ranking metric is scored, log
+      loss when probabilities are graded. A model tuned on the wrong loss loses points it
+      already earned.
+    citation: null
+    est_minutes: 20
+    prerequisites: [T0.linear-baseline]
+
+  - id: T1.target-transform
+    tier: 1
+    title: Model a transformed target when the target is skewed
+    summary: >-
+      For a positive, right-skewed target, fit on log1p and invert at prediction time; this
+      turns multiplicative error into additive error and usually helps squared-error
+      metrics. Check the data card's skew figure first, and invert carefully — a forgotten
+      expm1 looks like catastrophic underprediction.
+    citation: null
+    est_minutes: 15
+    prerequisites: [T0.linear-baseline]
+
+  - id: T1.cross-validation
+    tier: 1
+    title: Replace the single split with k-fold cross-validation
+    summary: >-
+      Fit k folds and average the validation score. It cuts the variance of the estimate,
+      which matters when the improvements being chased are close to run-to-run noise, and
+      it gives out-of-fold predictions that later ideas need.
+    citation: null
+    est_minutes: 20
+    prerequisites: [T0.honest-validation]
+
+  - id: T1.sample-weighting
+    tier: 1
+    title: Weight training rows the way the metric weights them
+    summary: >-
+      If the metric averages over groups, or over classes, or weights by some count, give
+      training rows the matching weight. Uniform weighting quietly optimises a different
+      quantity from the one being scored.
+    citation: null
+    est_minutes: 15
+    prerequisites: [T1.optimise-the-scored-metric]
+
+  # -------------------------------------------------------------------------
+  # T2 — features
+  # -------------------------------------------------------------------------
+  - id: T2.missingness-indicators
+    tier: 2
+    title: Add an explicit is-missing flag per incomplete column
+    summary: >-
+      Imputing a value throws away the fact that it was absent, and absence is often
+      informative. Keep the imputation and add a binary indicator column beside it for each
+      column the data card reports as having missing values.
+    citation: null
+    est_minutes: 10
+    prerequisites: [T0.linear-baseline]
+
+  - id: T2.out-of-fold-target-encoding
+    tier: 2
+    title: Target-encode high-cardinality categoricals, strictly out of fold
+    summary: >-
+      Replace a high-cardinality category with a smoothed mean of the target, computed only
+      from the other folds and never from the row's own fold. In-fold encoding is the single
+      most common way a pipeline scores far better on validation than on held-out data.
+    citation: "Micci-Barreca (2001), SIGKDD Explorations 3(1)"
+    est_minutes: 25
+    prerequisites: [T1.cross-validation]
+
+  - id: T2.interactions
+    tier: 2
+    title: Cross the two or three columns most related to the target
+    summary: >-
+      Take the strongest columns from the data card's ranking and build explicit
+      interactions — products or ratios for numerics, concatenated levels for categoricals.
+      Linear models cannot discover these on their own and tree models find them slowly.
+    citation: null
+    est_minutes: 20
+    prerequisites: [T0.linear-baseline]
+
+  - id: T2.binning
+    tier: 2
+    title: Bin a skewed numeric column into quantile buckets
+    summary: >-
+      Replace a long-tailed numeric with its quantile bucket, or add the bucket beside it.
+      It bounds the influence of outliers and lets the model fit a non-monotonic response
+      without needing depth to do it.
+    citation: null
+    est_minutes: 10
+    prerequisites: [T0.linear-baseline]
+
+  - id: T2.drop-uninformative
+    tier: 2
+    title: Prune columns that contribute nothing
+    summary: >-
+      Fit once, read the model's own importances, and drop the tail that carries no weight.
+      Fewer columns means faster iterations and less opportunity to overfit; if the score is
+      unchanged, keep the smaller pipeline.
+    citation: null
+    est_minutes: 15
+    prerequisites: [T3.gbdt]
+
+  # -------------------------------------------------------------------------
+  # T3 — model class
+  # -------------------------------------------------------------------------
+  - id: T3.gbdt
+    tier: 3
+    title: Gradient-boosted trees on the engineered columns
+    summary: >-
+      Fit LightGBM with early stopping on the validation metric. On tabular data this is
+      usually the strongest single model, it handles mixed types and missing values
+      natively, and it needs very little preparation compared to a neural network.
+    citation: "Ke et al. (2017), LightGBM, NeurIPS"
+    est_minutes: 25
+    prerequisites: [T0.linear-baseline]
+
+  - id: T3.tune-capacity
+    tier: 3
+    title: Tune depth, learning rate and regularisation together
+    summary: >-
+      Lower the learning rate and raise the number of rounds, then adjust leaf count and L2
+      until validation stops improving. Change one axis per iteration so the journal can
+      attribute the gain; a grid over everything at once is unreadable.
+    citation: null
+    est_minutes: 30
+    prerequisites: [T3.gbdt]
+
+  - id: T3.handle-imbalance
+    tier: 3
+    title: Address class imbalance explicitly
+    summary: >-
+      When one class is rare, set class weights or adjust the decision threshold on
+      validation rather than accepting the default 0.5. For threshold-free metrics such as
+      AUC this changes nothing, so check what is actually being scored first.
+    citation: null
+    est_minutes: 15
+    prerequisites: [T3.gbdt]
+
+  # -------------------------------------------------------------------------
+  # T4 — combine and calibrate
+  # -------------------------------------------------------------------------
+  - id: T4.seed-average
+    tier: 4
+    title: Average several seeds of the same model
+    summary: >-
+      Retrain the current best configuration under three or more seeds and average the
+      predictions. It reliably removes a little variance for no modelling risk, and it also
+      tells you how large a difference has to be before it counts as real.
+    citation: null
+    est_minutes: 15
+    prerequisites: [T3.gbdt]
+
+  - id: T4.blend-model-families
+    tier: 4
+    title: Blend a linear model with the tree model
+    summary: >-
+      Average the predictions of two models that fail differently — a regularised linear fit
+      and a boosted-tree fit. Weight the blend on validation. Diverse errors cancel; two
+      tuned versions of the same model do not.
+    citation: null
+    est_minutes: 20
+    prerequisites: [T3.gbdt, T0.linear-baseline]
+
+  - id: T4.stacking
+    tier: 4
+    title: Stack out-of-fold predictions with a simple meta-model
+    summary: >-
+      Feed the out-of-fold predictions of several base models into a ridge or logistic
+      meta-model. Strictly stronger than a fixed-weight blend when the base models are
+      genuinely different, and it needs the fold predictions to already exist.
+    citation: "Wolpert (1992), Stacked Generalization, Neural Networks 5(2)"
+    est_minutes: 30
+    prerequisites: [T1.cross-validation, T4.blend-model-families]
+
+  - id: T4.calibration
+    tier: 4
+    title: Calibrate predicted probabilities
+    summary: >-
+      Fit isotonic or Platt scaling on validation when the metric rewards well-calibrated
+      probabilities, such as log loss or Brier score. It leaves the ranking untouched, so it
+      does nothing at all for AUC — check the metric before spending an iteration on it.
+    citation: "Niculescu-Mizil & Caruana (2005), ICML"
+    est_minutes: 15
+    prerequisites: [T3.gbdt]

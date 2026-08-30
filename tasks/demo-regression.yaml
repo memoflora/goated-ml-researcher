@@ -1,0 +1,45 @@
+# A second task, deliberately unlike the first: continuous target, no groups, RMSE, a
+# random split, and a submission schema with a different shape. It exists to prove the
+# orchestrator is not KuaiRand-shaped — if this runs, the agnostic path works.
+#
+# Generate the data first:  python tools/make_demo_data.py
+
+name: demo-regression
+kind: regression
+
+description: |
+  Predict the monthly rent of a rental listing from its attributes: size, number of rooms,
+  neighbourhood, property type, distance to the city centre, and building characteristics.
+
+  Each row is one listing and rows are independent — there is no grouping and no ordering.
+  The target `monthly_rent` is a positive real number in local currency.
+
+  Some columns have missing values, and at least one column is suspiciously close to the
+  target; check the data card's warnings before trusting a feature.
+
+data:
+  dir: data/demo-regression
+  file: listings.csv
+  target: monthly_rent
+  id_columns: [listing_id]
+  split:
+    strategy: random
+    valid_frac: 0.2
+    test_frac: 0.2
+    seed: 0
+
+submission:
+  columns: [row_id, listing_id, prediction]
+  prediction_column: prediction
+
+ideas: tasks/ideas/generic-tabular.yaml
+
+metrics:
+  primary: [rmse]
+  report:  [rmse, mae, r2]
+
+limits:
+  max_iters: 20
+  wall_clock_s: 3600
+  conv_eps: 1.0        # in target units (currency), not a 0-1 score
+  conv_n: 3
