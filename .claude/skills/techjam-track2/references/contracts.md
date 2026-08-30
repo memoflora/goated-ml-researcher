@@ -2,15 +2,22 @@
 
 ## What we are building
 
-An **autonomous ML research agent** for KuaiRand-Pure. An orchestrator drives a closed loop: an
-LLM writes a complete `pipeline.py`, a sandbox runs it, an evaluator scores its submission, a
-search policy decides what to try next, and a journal records the trajectory.
+An **autonomous ML research agent**. An orchestrator drives a closed loop: an LLM writes a
+complete `pipeline.py`, a sandbox runs it, an evaluator scores its submission, a search policy
+decides what to try next, and a journal records the trajectory.
+
+**The problem is configuration.** `tasks/<name>.yaml` names the data, target, split, metrics
+and submission schema; the data card, evaluator, prompts, sandbox checks and report all read
+their facts from there. KuaiRand-Pure is one such file and is 100% of the score — it keeps the
+organisers' own loader and evaluation code, so nothing about how it is scored has changed.
 
 The shape is AIDE-like (arXiv:2502.13138): **treat ML engineering as code optimisation and
 search over a tree of solution programs.** Proven, easy to explain to judges, and it splits
 cleanly across four people.
 
 ```
+   tasks/*.yaml (C) ──► TaskConfig ──► everything below reads its facts from here
+                        │
    ideas.yaml (D) ─┐
                    ├─► Context ─► agent.py (B) ─► Proposal ─► pipeline.py
    datacard.py (C) ─┘      ▲            │                          │
@@ -35,12 +42,19 @@ orchestrator/
   run.py          A   the CLI
   agent.py        B   LLM client, prompt assembly, proposal parsing, repair loop
   sandbox.py      B   subprocess runner, timeouts, error classification
-  evaluate.py     C   evaluate.py + submit.py wrappers (score, validate)
-  datacard.py     C   the EDA summary the LLM reads
+  evaluate.py     C   score() and validate(), per task
+  datacard.py     C   the EDA summary the LLM reads (hand-tuned for KuaiRand, generated otherwise)
   report.py       C   journal -> RESULTS.md + trajectory PNG
+  splits.py       C   the KuaiRand fast path, through the starter kit's loader
+  taskspec.py     C   tasks/*.yaml -> TaskConfig
+  metrics.py      C   metric registry; every metric declares a direction
+  datasource.py   C   generic loading, splitting, split materialisation
+  profile.py      C   automatic EDA, for a dataset nobody has hand-described
   knowledge.py    D   retrieve()
-  ideas.yaml      D   the idea bank
-  prompts/        D   system.md, draft.md, improve.md, repair.md
+  ideas.yaml      D   the KuaiRand idea bank
+  prompts/        D   system.md, draft.md, improve.md, repair.md — task-templated
+tasks/            C   one YAML per problem; tasks/ideas/ holds per-task idea banks
+tools/            -   make_demo_data.py (offline demo fixture)
 data/             C   splits and caches (gitignored)
 reference/        D   our hand-written calibration pipeline
 runs/             -   per-run workspaces + journal.jsonl (gitignored)
@@ -63,11 +77,18 @@ It must:
 
 1. read the fixed splits from `--data-dir`
 2. train on **train only** when `--split val`; on **train + validation** when `--split test`
-3. write `<out-dir>/submission.csv` as `row_id,user_id,video_id,score`
+3. write `<out-dir>/submission.csv` with the task's header — `row_id,user_id,video_id,score`
+   for KuaiRand, `submission.columns` in the task file otherwise. `row_id` is always first
+   and is always the key.
 4. print exactly one stdout line `RESULT_JSON {...}` with at least
    `{"n_rows": int, "train_seconds": float, "notes": str}`
 5. exit 0 on success, non-zero on failure, never prompt for input
-6. honour `--subsample F` by sampling **users**, not rows
+6. honour `--subsample F` by sampling **whole groups** when the task has a group column
+   (users, for KuaiRand), and rows otherwise. Row sampling silently breaks a grouped metric.
+
+For a non-KuaiRand task, `--data-dir` points at **materialised splits**: `train.csv`,
+`valid.csv`, `test.csv`, written once so the pipeline never re-derives a split and drifts
+from the rows it is scored on. `test.csv` has the target column removed.
 
 Why one file: trivial to sandbox, diff, revert, and the LLM can hold all of it in context.
 Do not "improve" this into a framework.
@@ -97,11 +118,21 @@ class TaskSpec:
     metrics: tuple[str, ...]        # ("gauc", "ndcg@5")
     baseline_val: dict[str, float]  # {"gauc":0.6674,"ndcg@5":0.5357,"primary":0.6016}
     baseline_test: dict[str, float] # {"gauc":0.6610,"ndcg@5":0.5282,"primary":0.5946}
-    ceiling: float = 0.8645
+    ceiling: float | None = 0.8645
     max_iters: int = 50
     wall_clock_s: int = 6 * 3600
     conv_eps: float = 0.002
     conv_n: int = 3
+
+    # Added when the orchestrator stopped assuming KuaiRand. Every field has a
+    # KuaiRand-shaped default, so a TaskSpec built the old way is unchanged.
+    kind: str = "ranking"           # ranking | binary | multiclass | regression
+    description: str = ""           # the problem statement; goes into every prompt
+    primary_parts: tuple[str, ...] = ("gauc", "ndcg@5")
+    submission_columns: tuple[str, ...] = ("row_id", "user_id", "video_id", "score")
+    prediction_column: str = "score"
+    seed_std: float | None = 0.0008
+    config: object | None = None    # the parsed tasks/<name>.yaml
 
 
 @dataclass
@@ -169,12 +200,20 @@ def repair(ctx: Context, node: Node) -> Proposal: ...
 def run(node: Node, *, split: str, seed: int, timeout_s: int,
         subsample: float | None = None) -> ExecResult: ...
 
-# evaluate.py (C)
-def score(submission: Path, split: str) -> dict[str, float]: ...
-def validate(submission: Path, split: str) -> tuple[bool, str]: ...
+# evaluate.py (C)  -- `task` is optional and defaults to KuaiRand, so the frozen
+#                     two-argument shape still works everywhere.
+def score(submission: Path, split: str, task=None) -> dict[str, float]: ...
+def validate(submission: Path, split: str, task=None) -> tuple[bool, str]: ...
 
 # datacard.py (C)
-def data_card() -> str: ...          # markdown EDA summary, <= 3000 tokens
+def data_card(task=None) -> str: ...  # markdown EDA summary, <= 3000 tokens
+
+# taskspec.py (C)
+def load_task(ref: str | Path) -> TaskConfig: ...   # "kuairand-pure" or a path
+
+# metrics.py (C)
+def compute(name, y_true, y_pred, groups=None) -> float: ...
+def primary_of(metrics: dict, parts: tuple[str, ...]) -> float: ...  # always maximised
 
 # knowledge.py (D)
 def retrieve(*, tried: list[str], best_metrics: dict,
@@ -306,7 +345,9 @@ in `STATUS.md`, keep the old shape working, and get one other person to ack befo
 - A web UI or HTML dashboard. Nobody scores it; `RESULTS.md` plus one PNG is enough.
 - Planner/coder/critic personas inside the agent. Burns scored tokens, adds failure modes.
   One well-prompted call per node.
-- A general framework for arbitrary datasets. KuaiRand-Pure is 100% of the score.
+- **Anything past the task layer.** `tasks/*.yaml` exists so a new dataset is a config file.
+  A plugin system, a second orchestrator, or a UI on top of it is scope we do not have.
+  KuaiRand-Pure is still 100% of the score.
 - GPU or distributed training. The reference pipeline is ~28 min of one CPU core for 100
   iterations. Wall-clock is scored; a GPU will not help and may hurt.
 - Bonus benchmarks before the required one converges and beats the baseline.

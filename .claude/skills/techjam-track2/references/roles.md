@@ -7,7 +7,7 @@ and how we prove it worked. Each of the four owns exactly one judged criterion.
 |---|---|---|---|
 | **A** | ML Engineer — Orchestrator & Run | `contracts.py` `core.py` `policy.py` `journal.py` `run.py` | **Autonomy** — runs finish unattended |
 | **B** | ML Engineer — Agent Runtime & Sandbox | `agent.py` `sandbox.py` `Makefile` `.github/` | **Robustness + Feasibility** — failures recover, tokens stay cheap |
-| **C** | ML Researcher — Data, Metrics & Evaluation | `evaluate.py` `datacard.py` `report.py` `data/` | **Primary metric** — the number is real and we can iterate fast |
+| **C** | ML Researcher — Data, Metrics & Evaluation | `evaluate.py` `datacard.py` `report.py` `splits.py` `taskspec.py` `metrics.py` `datasource.py` `profile.py` `data/` `tasks/` | **Primary metric** — the number is real and we can iterate fast |
 | **D** | ML Researcher — Method, Knowledge & Story | `ideas.yaml` `knowledge.py` `prompts/` `reference/` `docs/` | **Innovation & Presentation** — what it tried, why, and how we tell it |
 
 Ownership is per file, not per directory. If you need a change in someone else's file, put it
@@ -17,6 +17,9 @@ The **A/B pair** builds the machine. The **C/D pair** decides what the machine t
 They meet at two seams only: C's `datacard.py` and D's `prompts/` + `ideas.yaml` feed B's
 `agent.py` through `Context`; C's `evaluate.py` feeds A's `core.py`. Both seams are frozen in
 `contracts.md`, so all four can work at once from hour zero.
+
+Upstream of all four sits C's `tasks/<name>.yaml`: it decides what the problem *is*, and the
+data card, evaluator, prompts, sandbox checks and report all read their facts from it.
 
 ---
 
@@ -64,6 +67,7 @@ failures), and `journal.py` (append-only JSONL, flush every write). Push it, ann
 ```
 python -m orchestrator.run --task kuairand-pure --mode {smoke,dev,official} \
        [--max-iters N] [--wall-clock 6h] [--resume RUN_ID] [--seed N]
+python -m orchestrator.run --list-tasks        # anything in tasks/ is a valid --task
 ```
 
 Fully unattended by default. There is no interactive mode. Wanting one is a signal to make the
@@ -122,7 +126,9 @@ Load the `claude-api` skill before writing the client. Do not write it from memo
 5. **Repair loop.** Up to **3** attempts per node, each seeing the error excerpt *and* what the
    previous attempt tried. After 3, signal A to mark the node dead. Never loop forever.
 6. **Token discipline** — this is scored. Prompt-cache the static block (system + task card +
-   data card + library whitelist); it is identical on every call. Never send the dataset, never
+   data card + library whitelist); it is identical on every call. It is also *rendered* — the
+   system prompt is a template now, so the submission header, the subsample rule and the dead
+   ends come from the task rather than being typed into `system.md`. Never send the dataset, never
    more than the parent's code, never full history. Cap and log the prompt token count.
 7. **`make check` and CI.** Lint + unit tests + smoke run, under 60 s, on every push. Keeping
    `main` green is yours to enforce.
@@ -159,6 +165,9 @@ Prove each recovers with **zero human input**, and record real results in `STATU
   angle in the prompt, not just the seed.
 - Watch for the model "winning" by scoring against visible labels or writing a submission for
   the wrong split. Both look like a breakthrough and are both bugs.
+- Anything in `sandbox.py` that hardcodes a column count or a header is a KuaiRand assumption.
+  `check_submission` takes `header_columns` from the task; it used to reject every other
+  task's valid submission as a `contract` error, three times, and then kill the node.
 
 ---
 
@@ -167,8 +176,9 @@ Prove each recovers with **zero human input**, and record real results in `STATU
 You own truth. If the metric is subtly wrong, every decision the agent makes all weekend is
 based on a lie, and we would not find out until the hidden-test score comes back.
 
-**Files:** `orchestrator/evaluate.py`, `datacard.py`, `report.py`, `data/`,
-`requirements-pipeline.txt`, `tests/test_evaluate.py`
+**Files:** `orchestrator/evaluate.py`, `datacard.py`, `report.py`, `splits.py`,
+`taskspec.py`, `metrics.py`, `datasource.py`, `profile.py`, `data/`, `tasks/`,
+`requirements-pipeline.txt`, `tests/test_evaluator.py`, `tests/test_taskspec.py`
 
 ### First task, due H+6 — reproduce the official baseline
 
@@ -208,6 +218,31 @@ splits as `.npy`; a shared read-only feature cache keyed by feature-spec hash; `
 samples **users, not rows** (row sampling breaks GAUC); keep `requirements-pipeline.txt` tight,
 since every library is install time on every node.
 
+### The task layer — done at H+30, and yours to maintain
+
+The orchestrator no longer assumes KuaiRand. A problem is `tasks/<name>.yaml`; the data card,
+evaluator, prompts, sandbox checks and report all read their facts from it.
+
+| Module | Does |
+|---|---|
+| `taskspec.py` | `tasks/*.yaml` -> `TaskConfig`, validated with errors that say what to fix |
+| `metrics.py` | the metric registry. **Every metric declares a direction**, and `primary` negates the lower-is-better ones, so `core.py` only ever maximises |
+| `datasource.py` | generic loading; `predefined` / `date` / `random` / `group` splits; `materialise()` writes one CSV per split so a pipeline never re-derives one |
+| `profile.py` | automatic EDA — the capability that makes a new dataset possible at all, since the card is the agent's only view |
+
+Two rules that keep this honest:
+
+- **KuaiRand keeps its own path.** `loader: starter_kit` routes it through the organisers'
+  `data.load()` and their `evaluate.py`, and it keeps the hand-tuned card. The generic
+  implementations are checked against the starter kit on all 124,909 validation rows and
+  agree to 4e-16 — that check is what makes the generic path trustworthy elsewhere.
+- **A task never inherits another task's idea bank.** A bank of recommender ideas on a
+  regression problem is worse than none, because the agent will dutifully try them. A task
+  with no `ideas:` gets `tasks/ideas/generic-tabular.yaml`, which claims nothing.
+
+`materialise()` also drops the target column from `test.csv`, so no-peeking holds because the
+labels are absent, not because we asked.
+
 ### Fourth task, due H+36 — the results generator
 
 `report.py` turns `journal.jsonl` into `RESULTS.md` plus one trajectory PNG. Auto-generated,
@@ -234,6 +269,9 @@ headline image — D puts it at the top of the Devpost entry.
 - [ ] Data card is under 3000 tokens and contains no advice
 - [ ] A full pipeline run on cached features completes in under 5 minutes
 - [ ] `make report RUN=<id>` regenerates RESULTS.md + PNG from the journal alone
+- [x] a second, unrelated task runs end to end (`--task demo-regression`), proving the
+      orchestrator is not KuaiRand-shaped
+- [x] generic `gauc`/`ndcg@5` agree with the starter kit to floating-point precision
 
 ### Traps
 
@@ -245,6 +283,11 @@ headline image — D puts it at the top of the Devpost entry.
 - Row sampling breaks GAUC — subsample users.
 - `(user_id, video_id)` is not unique. Any join or dedupe assuming uniqueness silently
   misaligns the submission.
+- **Every failure in the task layer is silent.** Nothing raises when the agent is handed the
+  wrong dataset's data card, or its submission is checked against another task's header, or a
+  regression submission is rank-averaged into [0,1]. The run completes and reports success.
+  When touching this layer, ask what a wrong answer would look like — it looks like a normal
+  run.
 
 ---
 
