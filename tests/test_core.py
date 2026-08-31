@@ -23,10 +23,17 @@ from tests.stubs.executor import CLIMBING_SCRIPT, DEFAULT_SCRIPT
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+# A minimal schema-valid submission, for executors that only need to look plausible.
+SUBMISSION_STUB = "row_id,user_id,video_id,score\n0,0,1,0.5\n"
+
 
 def build(tmp_path, *, script=DEFAULT_SCRIPT, max_iters=3, run_id="rtest", **kwargs):
     run_dir = Path(tmp_path) / run_id
     journal_mod.close()
+    # The test-path probe is off here because StubExecutor replays a fixed script, and
+    # an extra run would consume an entry meant for the next iteration. TestTestPathProbe
+    # covers the probe itself against executors built for it.
+    kwargs.setdefault("probe_test_path", False)
     return Orchestrator(
         stub_task(max_iters=max_iters, wall_clock_s=3600),
         run_dir=run_dir,
@@ -749,3 +756,71 @@ def test_the_skeleton_declares_every_flag_the_orchestrator_passes():
     src = (_REPO / "orchestrator" / "prompts" / "skeleton.py").read_text(encoding="utf-8")
     for flag in ("--data-dir", "--out-dir", "--split", "--seed", "--subsample"):
         assert f'"{flag}"' in src, f"skeleton's argparse never declares {flag}"
+
+
+class TestTestPathProbe:
+    """Run 4 scored 0.6189 on validation and then could not be submitted: finalisation
+    died on a `DataFrame.append` sitting on the `--split test` branch — a line the entire
+    run never executed, because every development iteration uses `--split val`.
+
+    The prompt already warned that `.append` was removed, and the agent avoided it
+    everywhere it got feedback. So this is a feedback gap, not a knowledge gap, and the
+    fix is to give the test branch feedback while iterations remain to spend on it.
+    """
+
+    class _SplitAwareExecutor:
+        """Succeeds on val; behaves as configured on test."""
+
+        def __init__(self, *, test_ok: bool):
+            self.test_ok = test_ok
+            self.splits: list[str] = []
+
+        def run(self, node, *, split, seed, timeout_s, subsample=None, **kw):
+            from orchestrator.contracts import ExecResult
+
+            self.splits.append(split)
+            if split == "test" and not self.test_ok:
+                msg = "AttributeError: 'DataFrame' object has no attribute 'append'"
+                return ExecResult(
+                    ok=False, exit_code=1, stdout_tail="", stderr_tail=msg,
+                    error_class="runtime", error_excerpt=msg, result_json=None,
+                    artifacts={}, wall_s=0.1, peak_rss_mb=0.0,
+                )
+            sub = node.workspace / "submission.csv"
+            sub.write_text(SUBMISSION_STUB, encoding="utf-8")
+            return ExecResult(
+                ok=True, exit_code=0, stdout_tail="", stderr_tail="",
+                error_class=None, error_excerpt=None, result_json={"n_rows": 1},
+                artifacts={"submission": sub}, wall_s=0.1, peak_rss_mb=0.0,
+            )
+
+    def _run(self, tmp_path, *, test_ok):
+        ex = self._SplitAwareExecutor(test_ok=test_ok)
+        orch = build(tmp_path, max_iters=1, probe_test_path=True)
+        orch.executor = ex
+        summary = orch.run()
+        return summary, ex
+
+    def test_a_node_whose_test_path_runs_is_accepted(self, tmp_path):
+        summary, ex = self._run(tmp_path, test_ok=True)
+        assert summary["best_node"] is not None
+        assert "test" in ex.splits, "the probe never exercised the test branch"
+
+    def test_a_node_whose_test_path_fails_is_not_selectable(self, tmp_path):
+        """It is a near miss we could never submit, so it must not become `best`.
+
+        Letting it win is what produced run 4: a good validation score and no
+        submittable artifact at the end of the run.
+        """
+        summary, ex = self._run(tmp_path, test_ok=False)
+        assert "test" in ex.splits
+        assert summary["best_node"] is None
+
+    def test_the_failure_reaches_the_agent_as_a_repairable_error(self, tmp_path):
+        run_dir = Path(tmp_path) / "rtest"
+        self._run(tmp_path, test_ok=False)
+        errors = [r for r in rows(run_dir) if r.get("event") == "error"]
+        assert errors, "the test-path failure was never journalled"
+        text = " ".join(str(e.get("error_excerpt") or "") for e in errors)
+        assert "--split test" in text, "the message must name the branch that failed"
+        assert "append" in text, "the underlying error must reach the repair prompt"
