@@ -528,7 +528,7 @@ class Orchestrator:
             seed=self.seed,
             timeout_s=self.timeout_s,
             subsample=self.subsample,
-            **self._exec_task_kwargs(),
+            **self._exec_task_kwargs("val"),
         )
         node.exec_result = result
         self.acct.add_exec(result.wall_s)
@@ -651,7 +651,7 @@ class Orchestrator:
                 seed=0,
                 timeout_s=min(self.timeout_s, TEST_PATH_TIMEOUT_S),
                 subsample=TEST_PATH_SUBSAMPLE,
-                **self._exec_task_kwargs(),
+                **self._exec_task_kwargs("test"),
             )
         except Exception as exc:  # noqa: BLE001 - never let the probe sink a good node
             self.journal.emit(
@@ -894,7 +894,7 @@ class Orchestrator:
             )
         return self._data_card
 
-    def _exec_task_kwargs(self) -> dict:
+    def _exec_task_kwargs(self, split: str = "val") -> dict:
         """Tell the sandbox this task's submission header, when it can accept it.
 
         Its structural pre-check compares the CSV header against a constant. On any task
@@ -917,10 +917,10 @@ class Orchestrator:
         # was handed the repo's data root and had to go hunting for its own dataset. The
         # first real run lost an iteration to exactly that.
         if "data_dir" in params:
-            out["data_dir"] = Path(self._pipeline_data_dir())
+            out["data_dir"] = Path(self._pipeline_data_dir(split))
         return out
 
-    def _pipeline_data_dir(self) -> Path:
+    def _pipeline_data_dir(self, split: str = "val") -> Path:
         """Where the generated pipeline should look for its data.
 
         For a generic task this is the *materialised* split directory, not the raw source:
@@ -930,7 +930,33 @@ class Orchestrator:
         """
         cfg = getattr(self.task, "config", None)
         if cfg is None or getattr(cfg.data, "loader", "") == "starter_kit":
-            return Path(self.task.data_dir)
+            raw = Path(self.task.data_dir)
+            # Hand over a copy with the labels this split may not see blanked out. A run
+            # scored 0.8484 — the oracle ceiling — by computing per-item long_view rates
+            # from the evaluation split and predicting that same column with them. No
+            # prompt prevented it; the data card warned about leakage and it happened
+            # anyway. Absence is the only enforcement that holds.
+            try:
+                from orchestrator import masking
+
+                if masking.needs_masking(self.task):
+                    return masking.masked_data_dir(raw, split, self.run_dir / "_data")
+            except Exception as exc:  # noqa: BLE001
+                # Never fall through to the unmasked directory in silence: a run that
+                # cannot mask is a run whose numbers we could not defend.
+                self.journal.emit(
+                    {
+                        "event": "error",
+                        "iteration": self.iteration,
+                        "error_class": "data",
+                        "error_excerpt": (
+                            f"could not mask labels ({type(exc).__name__}: {exc}); "
+                            "refusing to hand the pipeline an unmasked split"
+                        ),
+                    }
+                )
+                raise
+            return raw
         try:
             from orchestrator import datasource as ds
 
@@ -1288,7 +1314,7 @@ class Orchestrator:
             try:
                 res = self.executor.run(
                     seed_node, split="test", seed=seed, timeout_s=self.timeout_s,
-                    subsample=None, **self._exec_task_kwargs(),
+                    subsample=None, **self._exec_task_kwargs("test"),
                 )
             except Exception as exc:  # noqa: BLE001 - one bad seed must not lose the run
                 self.journal.emit(
