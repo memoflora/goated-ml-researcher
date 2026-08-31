@@ -604,3 +604,63 @@ import, CSV encoding) — all three were invisible on macOS.
 - **`requirements.txt`** — `pyyaml` is needed by `knowledge.py` and is still unpinned.
 - **Devpost draft, README, demo video** — D, not started. The writeup wants 4-5 hypotheses
   quoted verbatim from a real journal, so it is gated on the first live run.
+
+---
+
+# Checkpoint — end-to-end verified (31 Aug)
+
+**The loop now works end to end on real data.** Until today it never had: the stub
+pipeline emitted fabricated `(user_id, video_id)` pairs, so every submission failed
+alignment and `best_node` was always `None` — on both tasks, for the whole life of the
+project. The suite was green throughout, because nothing in it ran the loop against real
+data. Three tests in `test_core.py` now do.
+
+## Verified on main
+
+| check | result |
+|---|---|
+| test suite | **342 passed, 9 skipped** |
+| with `TECHJAM_SLOW_TESTS=1` | **346 passed, 5 skipped** |
+| `ruff check orchestrator tests` | clean |
+| end-to-end matrix (2 tasks x 2 offline agents) | **4/4 scored, 4/4 valid submission, 0 dead nodes** |
+
+Item popularity through the full loop — sandbox, validator, evaluator, finalisation —
+scores validation primary **0.5807219**, the published number to five decimals, for
+**zero tokens**.
+
+## How to exercise the whole loop with no API key
+
+```bash
+python -m orchestrator.run --task kuairand-pure --mode smoke     --agent replay --sandbox auto --evaluator auto --max-iters 3 --subsample 1.0
+```
+
+`--agent replay` serves canned real pipelines in sequence. This is what CI runs and what
+any reviewer can run; it needs no key and costs nothing.
+
+## Providers
+
+OpenAI primary, Gemini fallback. Both keys verified live (124 and 50 models reachable).
+Failover is deliberately narrow: auth or model-not-found disables the primary for the
+run, 429/5xx after backoff fails over for one call only, and it **never** fails over on a
+malformed proposal — that is the repair loop's job, and conflating the two would hide
+model-quality problems behind a provider switch. `summary.json` records which provider
+actually served, because Feasibility is scored on tokens and a silent failover would make
+our reported numbers wrong.
+
+## Bugs found and fixed today
+
+- The shared system prompt hardcoded KuaiRand's headroom analysis, so `demo-regression`
+  was told its objective mismatched a within-user ranking metric it does not have.
+- `_read_scores` opened submissions with the platform default encoding — the third
+  cp1252 bug here, so `test_evaluator.py` now runs the same AST audit `test_core.py` does.
+- `_recover()` had no handler on the module seam, so every API retry was invisible.
+- `ideas.yaml` claimed `retrieve()` escalates on gains; it never reads scores.
+
+## What is still not proven
+
+**No run has used a live model.** Everything above is the harness verified with scripted
+agents. The next milestone is a real `--mode dev` run: 8 iterations, subsampled, measuring
+actual per-iteration token cost before committing to a 50-iteration official run.
+
+`docs/devpost.md` is drafted with the agent-hypothesis quotes left as explicit
+placeholders. They can only be filled from a real journal.
