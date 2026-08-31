@@ -25,6 +25,7 @@ the code (`ALLOW_TEST_SCORING`), not in a promise.
 | BPR-FM control (hand-written) | 0.6032 | +0.0016 |
 | ~~Leaked run~~ | ~~0.6189~~ | ~~+0.0173~~ **withdrawn — leakage** |
 | **Best clean agent run** — gpt-5.1 | **0.5918** | **−0.0098** |
+| Clean agent run with a submission — gpt-4o | 0.5806 | −0.0210 |
 | Oracle ceiling (a *perfect* ranking) | 0.8484 | +0.247 |
 
 > ⚠️ **Two of our headline numbers were label leakage and have been withdrawn.** A run

@@ -38,6 +38,7 @@ tolerance: running the organisers' own untouched `baseline.py` on this machine g
 | run `r20260831-0532`, gpt-4o | 0.6189 | +0.0173 | no | **NO — leaked** |
 | run `r20260831-0633`, gpt-4o | 0.4839 | −0.1177 | yes | yes, but search was biased |
 | run `r20260831-0708`, gpt-4o | 0.8484 | +0.2468 | yes | **NO — leaked** |
+| run `r20260831-0724`, gpt-4o | **0.5806** | −0.0210 | **yes, validated** | **YES — audited clean** |
 | run `r20260831-0741`, **gpt-5.1** | **0.5918** | **−0.0098** | no (crash) | **YES — first clean result** |
 
 ### Why 0.6189 and 0.8484 must not be reported
@@ -98,17 +99,44 @@ and 13, recorded the branch as broken, and — after the fix — left the node e
 the metric anyway. The earlier version of that check would have thrown away the best model.
 The probe did its job; the underlying crash is a separate, unfixed problem.
 
+### The submittable artifact — `r20260831-0724`, gpt-4o
+
+The gpt-5.1 run scored higher but produced nothing to submit. This one did both halves of the
+job, and it is the only run that has.
+
+| field | value |
+|---|---|
+| model | `gpt-4o` |
+| validation primary | **0.58059** (GAUC 0.63856, nDCG@5 0.52262) |
+| vs baseline | **−0.0210** |
+| iterations | 15 |
+| tokens | 155,462 |
+| **final submission** | **`runs/r20260831-0724/final/submission.csv` — 170,588 rows, validates** |
+| manual interventions | 0 |
+
+**Audited clean.** It ran before the mask existed, so it was checked two ways. By
+construction: it loads the evaluation split with the ID columns only — `long_view` is never
+read for eval rows — and computes its CTR features from `train_df` alone, which is legitimate
+target encoding. By measurement: re-run against the completed mask it scores **0.58059**,
+identical to five decimals. A leaking pipeline's score moves; this one does not.
+
+Its model is a logistic regression on count and CTR features, and it lands essentially on top
+of the item-popularity heuristic (0.5807). Honest reading: the agent reproduced a sensible
+baseline-grade model and made it submittable.
+
 ### How this compares
 
-| | primary | notes |
-|---|---|---|
-| item popularity | 0.5807 | a 20-line heuristic |
-| **gpt-5.1 agent, clean** | **0.5918** | beats the heuristic, short of the baseline |
-| official FM baseline | 0.6016 | the bar |
-| our hand-written BPR control | 0.6032 | one human change |
+| | primary | submission | notes |
+|---|---|---|---|
+| item popularity | 0.5807 | — | a 20-line heuristic |
+| **gpt-4o agent, clean** | **0.5806** | **✓ validated** | matches the heuristic; the artifact we can file |
+| **gpt-5.1 agent, clean** | **0.5918** | ✗ crashed | the best clean score |
+| official FM baseline | 0.6016 | — | the bar |
+| our hand-written BPR control | 0.6032 | — | one human change |
 
-The agent beat a trivial heuristic and fell short of a tuned baseline. That is the honest
-position, and it is what should go in the writeup.
+Two clean agent runs, neither beating the baseline: the better score has no submission, the
+submission has the weaker score. gpt-5.1 got closer (−0.0098 vs −0.0210). That is the honest
+position and it is what should go in the writeup.
 
 ---
 

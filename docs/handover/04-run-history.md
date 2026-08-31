@@ -71,7 +71,21 @@ uncovered the leak. Full account in [03-findings.md](03-findings.md) §1. Re-run
 completed mask, the same pipeline scores **0.4794**, below random, with correlation to the
 truth falling from 0.98931 to −0.03989.
 
-### Official run on gpt-5.1 — the one clean result
+### Official run B — 0.5806, clean, and the only submittable artifact
+
+`r20260831-0724` · 15 iterations · 155,462 tokens · gpt-4o
+
+Launched alongside run A, before the mask existed, so it was audited afterwards two ways.
+**By construction:** it loads the evaluation split with ID columns only — `long_view` is never
+read for eval rows — and computes CTR features from `train_df` alone, which is ordinary target
+encoding. **By measurement:** re-run against the completed mask it scores 0.58059, unchanged
+to five decimals. A leaking pipeline's score collapses; this one does not move.
+
+Validation primary **0.58059**, essentially on top of the item-popularity heuristic, and it
+wrote `final/submission.csv` — 170,588 rows, validated. **The only run that produced both a
+defensible score and a submittable artifact.**
+
+### Official run on gpt-5.1 — the best clean score
 
 `r20260831-0741` · 13 iterations of 50 · converged · 270,078 tokens · 6,514 s · `gpt-5.1`
 
@@ -104,6 +118,7 @@ full data.
 | r20260831-0532 | 0.6189 | no | **no — leaked** |
 | r20260831-0633 | 0.4839 | yes | yes, but the search was biased |
 | r20260831-0708 | 0.8484 | yes | **no — leaked** |
+| r20260831-0724 | **0.5806** | **yes, validated** | **yes — audited clean** |
 | r20260831-0741 | **0.5918** | no (crash) | **yes — the clean result** |
 
 ## Cost, measured
