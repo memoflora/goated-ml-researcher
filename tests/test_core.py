@@ -806,21 +806,31 @@ class TestTestPathProbe:
         assert summary["best_node"] is not None
         assert "test" in ex.splits, "the probe never exercised the test branch"
 
-    def test_a_node_whose_test_path_fails_is_not_selectable(self, tmp_path):
-        """It is a near miss we could never submit, so it must not become `best`.
+    def test_a_broken_test_path_does_not_cost_a_node_its_place(self, tmp_path):
+        """Quality is judged on the metric, never on the probe.
 
-        Letting it win is what produced run 4: a good validation score and no
-        submittable artifact at the end of the run.
+        An earlier version failed the node outright, which sounded principled and was
+        measurably wrong: a sophisticated pipeline is far likelier to have an untested
+        test branch than a trivial one, so vetoing on the probe selects for triviality.
+        The first official run rejected a trained pairwise-nDCG model at 0.49593 and
+        crowned one that ranked by video id at 0.48393 — below random. The broken branch
+        is a finalisation problem, not a reason to prefer a worse model.
         """
         summary, ex = self._run(tmp_path, test_ok=False)
-        assert "test" in ex.splits
-        assert summary["best_node"] is None
+        assert "test" in ex.splits, "the probe never exercised the test branch"
+        assert summary["best_node"] is not None, (
+            "a node was denied `best` for a broken test path; that is the regression "
+            "this test exists to prevent"
+        )
 
-    def test_the_failure_reaches_the_agent_as_a_repairable_error(self, tmp_path):
+    def test_the_broken_branch_is_recorded_for_repair_not_silently_dropped(self, tmp_path):
         run_dir = Path(tmp_path) / "rtest"
         self._run(tmp_path, test_ok=False)
-        errors = [r for r in rows(run_dir) if r.get("event") == "error"]
-        assert errors, "the test-path failure was never journalled"
-        text = " ".join(str(e.get("error_excerpt") or "") for e in errors)
-        assert "--split test" in text, "the message must name the branch that failed"
-        assert "append" in text, "the underlying error must reach the repair prompt"
+        marks = [
+            r for r in rows(run_dir)
+            if r.get("recovery") in ("test_path_broken", "test_path_repair")
+        ]
+        assert marks, "the broken test path was never journalled"
+        text = " ".join(str(m.get("error_excerpt") or "") for m in marks)
+        assert "--split test" in text, "the record must name the branch that failed"
+        assert "append" in text, "the underlying error must survive into the repair prompt"

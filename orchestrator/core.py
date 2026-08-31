@@ -378,6 +378,8 @@ class Orchestrator:
         # Off for scripted executors: their contract is a fixed sequence of results, and
         # an extra probe call consumes one. Real runs always want it.
         self.probe_test_path = probe_test_path
+        # node id -> "" when its --split test branch runs, else the failure text.
+        self._test_path_status: dict[str, str] = {}
         self._iter_estimate_default = float(
             iter_estimate_s if iter_estimate_s is not None else cfg["iter_estimate_s"]
         )
@@ -575,17 +577,35 @@ class Orchestrator:
         # that .append was removed, and the agent avoided it everywhere it got feedback.
         # So give it feedback here. Failing the node hands the error to the repair loop
         # while there are still iterations left to spend on it.
+        # Probe the test branch, but do NOT let the result veto `best`.
+        #
+        # An earlier version failed the node outright. That looked principled — a
+        # solution we cannot submit is not a solution — and it was measurably wrong. A
+        # sophisticated pipeline is far likelier to have an untested test branch than a
+        # trivial one, so vetoing on the probe selects for triviality. In the first
+        # official run it rejected a trained pairwise-nDCG model at 0.49593 and crowned
+        # a pipeline that ranked by video id at 0.48393: no training at all, and below
+        # random. Quality has to be judged on the metric.
+        #
+        # So record it, tell the agent, and let the search keep the best model. The
+        # broken branch is repaired at finalisation, where it actually matters.
         ok_test, why = self._test_path_runs(node) if self.probe_test_path else (True, "")
+        self._test_path_status[node.id] = "" if ok_test else why
         if not ok_test:
-            self._handle_failure(
-                node,
-                "contract",
-                "scored " + f"{metrics['primary']:.5f} on validation but the --split test "
-                "path fails, so this solution could never be submitted. Development runs "
-                "use --split val, so the test branch is never executed until the run "
-                f"ends: check it explicitly. {why}",
+            self.journal.emit(
+                {
+                    "event": "recovery",
+                    "iteration": self.iteration,
+                    "node_id": node.id,
+                    "recovery": "test_path_broken",
+                    "error_class": "contract",
+                    "error_excerpt": (
+                        "scores on validation but the --split test branch fails, so this "
+                        "cannot be submitted as it stands. It remains eligible to win on "
+                        f"the metric and will be repaired before finalisation. {why}"
+                    )[:1500],
+                }
             )
-            return
 
         node.metrics = metrics
         node.status = "ok"
@@ -1137,6 +1157,76 @@ class Orchestrator:
         atomic_write(self.run_dir / "summary.json", json.dumps(summary, indent=1))
         return summary
 
+    def _repair_test_path(self, node: Node) -> Node | None:
+        """Fix the winner's `--split test` branch, without disturbing what it scored.
+
+        Repairs are aimed at one node and one fault. The validation score is already
+        banked, so this asks only that the same solution survive the split it was never
+        run on. Returns a node whose test branch executes, or None if it stayed broken.
+        """
+        current = node
+        for attempt in range(1, self.max_repairs + 1):
+            why = self._test_path_status.get(current.id, "")
+            if not why:
+                return current
+            # build_context reads the error off the node, so stage it there.
+            current.exec_result = ExecResult(
+                ok=False, exit_code=1, stdout_tail="", stderr_tail=why[-1500:],
+                error_class="contract",
+                error_excerpt=(
+                    "This scored well on validation, so the model is not in question. It "
+                    "fails only under `--split test`, which trains on train plus "
+                    "validation and writes the test submission - a branch no development "
+                    f"iteration ever executes. Fix only that path. {why}"
+                )[:1500],
+                result_json=None, artifacts={}, wall_s=0.0, peak_rss_mb=0.0,
+            )
+            action = policy.Action(
+                kind="debug",
+                parent_id=current.id,
+                reason="the winner's --split test branch fails; repair it so the run can "
+                       "submit the model it actually chose",
+            )
+            ctx = self.build_context(action, current, repair_attempts=attempt - 1)
+            try:
+                proposal = self.agent.repair(ctx, current)
+            except Exception as exc:  # noqa: BLE001 - a dead agent must not lose the run
+                self.journal.emit({
+                    "event": "error", "iteration": self.iteration,
+                    "error_class": "unknown",
+                    "error_excerpt": f"test-path repair call failed: {type(exc).__name__}: {exc}",
+                })
+                return None
+            self.acct.add_tokens(proposal.tokens_in, proposal.tokens_out)
+
+            fixed = self.tree.add(
+                parent_id=current.id,
+                kind="debug",
+                iteration=self.iteration,
+                workspace_root=self.run_dir,
+                proposal=proposal,
+                repair_attempts=attempt,
+            )
+            fixed.workspace.mkdir(parents=True, exist_ok=True)
+            (fixed.workspace / "pipeline.py").write_text(proposal.code, encoding="utf-8")
+            # It inherits the parent's score: the model is unchanged, only the branch
+            # that writes the test submission was repaired.
+            fixed.metrics = dict(current.metrics or {})
+            fixed.status = "ok"
+
+            ok, why2 = self._test_path_runs(fixed)
+            self._test_path_status[fixed.id] = "" if ok else why2
+            self.journal.emit({
+                "event": "recovery", "iteration": self.iteration, "node_id": fixed.id,
+                "parent_id": current.id, "recovery": "test_path_repair",
+                "error_excerpt": f"attempt {attempt} of {self.max_repairs}: "
+                                 + ("test branch now runs" if ok else why2[:400]),
+            })
+            if ok:
+                return fixed
+            current = fixed
+        return None
+
     def finalize(self, best: Node | None) -> dict:
         """Rerun the validation-best node on `--split test`, seed-averaged.
 
@@ -1154,6 +1244,26 @@ class Orchestrator:
                 }
             )
             return out
+
+        # The winner earned its place on the metric; it may still have a broken test
+        # branch, because no development iteration ever runs one. Repair that here,
+        # where it is the only thing standing between a good model and a submission.
+        if self._test_path_status.get(best.id):
+            best = self._repair_test_path(best)
+            if best is None:
+                self.journal.emit(
+                    {
+                        "event": "error",
+                        "iteration": self.iteration,
+                        "error_class": "contract",
+                        "error_excerpt": (
+                            "the best node's --split test branch could not be repaired; "
+                            "finalising it anyway so the failure is visible in the "
+                            "artifacts rather than silent"
+                        ),
+                    }
+                )
+                best = self.tree.best()
 
         best_dir = self.run_dir / "best"
         if best_dir.exists():
