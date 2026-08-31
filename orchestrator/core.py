@@ -307,6 +307,11 @@ def _node_from_dict(d: dict) -> Node:
 # ---------------------------------------------------------------------------
 
 
+# The test-path probe asks only whether the branch executes, so keep it cheap.
+TEST_PATH_SUBSAMPLE = 0.01
+TEST_PATH_TIMEOUT_S = 300
+
+
 def _provider_report() -> dict:
     """Which provider actually served this run, for summary.json.
 
@@ -349,6 +354,7 @@ class Orchestrator:
         n_drafts: int = 3,
         max_repairs: int = 3,
         final_seeds: tuple[int, ...] | None = None,
+        probe_test_path: bool = True,
         iter_estimate_s: float | None = None,
         components: dict[str, str] | None = None,
         journal: journal_mod.Journal | None = None,
@@ -369,6 +375,9 @@ class Orchestrator:
         self.n_drafts = n_drafts
         self.max_repairs = max_repairs
         self.final_seeds = tuple(final_seeds if final_seeds is not None else cfg["final_seeds"])
+        # Off for scripted executors: their contract is a fixed sequence of results, and
+        # an extra probe call consumes one. Real runs always want it.
+        self.probe_test_path = probe_test_path
         self._iter_estimate_default = float(
             iter_estimate_s if iter_estimate_s is not None else cfg["iter_estimate_s"]
         )
@@ -555,6 +564,29 @@ class Orchestrator:
             self._handle_failure(node, "eval", f"scoring raised {type(exc).__name__}: {exc}")
             return
         metrics.setdefault("primary", primary(metrics))
+
+        # A node that scores on validation but cannot run on --split test is not a
+        # solution, it is a near miss we could never submit. Run 4 ended exactly there:
+        # 0.6189 on validation, and finalisation died on a `DataFrame.append` sitting on
+        # the test branch — a line the whole run never executed once, because every
+        # development iteration uses --split val.
+        #
+        # That is a feedback gap rather than a knowledge gap: the prompt already warns
+        # that .append was removed, and the agent avoided it everywhere it got feedback.
+        # So give it feedback here. Failing the node hands the error to the repair loop
+        # while there are still iterations left to spend on it.
+        ok_test, why = self._test_path_runs(node) if self.probe_test_path else (True, "")
+        if not ok_test:
+            self._handle_failure(
+                node,
+                "contract",
+                "scored " + f"{metrics['primary']:.5f} on validation but the --split test "
+                "path fails, so this solution could never be submitted. Development runs "
+                "use --split val, so the test branch is never executed until the run "
+                f"ends: check it explicitly. {why}",
+            )
+            return
+
         node.metrics = metrics
         node.status = "ok"
 
@@ -570,6 +602,53 @@ class Orchestrator:
             }
         )
         self._record_scored(node)
+
+    def _test_path_runs(self, node: Node) -> tuple[bool, str]:
+        """Execute the node's --split test branch just far enough to prove it runs.
+
+        Deliberately tiny: a hard subsample and a short timeout, because this is asking
+        "does this code path execute" and not "how good is it". The result is thrown
+        away. On the measured runs this costs a few seconds against a finalisation that
+        otherwise fails after every iteration is spent.
+        """
+        probe = node.workspace / "_testpath"
+        probe.mkdir(parents=True, exist_ok=True)
+        (probe / "pipeline.py").write_text(
+            (node.workspace / "pipeline.py").read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        probe_node = Node(
+            id=f"{node.id}-testpath",
+            parent_id=node.id,
+            kind=node.kind,
+            iteration=node.iteration,
+            workspace=probe,
+            proposal=node.proposal,
+        )
+        try:
+            res = self.executor.run(
+                probe_node,
+                split="test",
+                seed=0,
+                timeout_s=min(self.timeout_s, TEST_PATH_TIMEOUT_S),
+                subsample=TEST_PATH_SUBSAMPLE,
+                **self._exec_task_kwargs(),
+            )
+        except Exception as exc:  # noqa: BLE001 - never let the probe sink a good node
+            self.journal.emit(
+                {
+                    "event": "error",
+                    "iteration": self.iteration,
+                    "node_id": probe_node.id,
+                    "error_class": "unknown",
+                    "error_excerpt": f"test-path probe raised {type(exc).__name__}: {exc}",
+                    "recovery": "probe_skipped",
+                }
+            )
+            return True, ""  # inconclusive: do not punish the node for our own failure
+        self.acct.add_exec(res.wall_s)
+        if res.ok:
+            return True, ""
+        return False, (res.error_excerpt or res.stderr_tail or "")[-600:]
 
     def _handle_failure(self, node: Node, error_class: str, excerpt: str) -> None:
         """Three repairs, then dead, then route around. This is the Robustness score."""
