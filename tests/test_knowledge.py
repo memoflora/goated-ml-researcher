@@ -54,6 +54,27 @@ def test_prerequisites_never_point_upward():
             assert by_id[p].tier <= i.tier, f"{i.id} (T{i.tier}) requires higher-tier {p}"
 
 
+def test_ideas_meta_matches_the_task_file():
+    """`meta:` is documentation, not code — which is exactly why it drifts.
+
+    Nothing reads it, so a stale number here is invisible until a human quotes it in the
+    writeup. Pin it to `tasks/kuairand-pure.yaml`, which *is* read.
+    """
+    yaml = pytest.importorskip("yaml")
+    root = Path(__file__).resolve().parent.parent
+    bank = yaml.safe_load((root / "orchestrator" / "ideas.yaml").read_text(encoding="utf-8"))
+    task = yaml.safe_load((root / "tasks" / "kuairand-pure.yaml").read_text(encoding="utf-8"))
+
+    meta = bank["meta"]
+    assert meta["baseline_val_primary"] == task["baseline"]["valid"]["primary"]
+    assert meta["baseline_test_primary"] == task["baseline"]["test"]["primary"]
+    assert meta["oracle_test_primary"] == task["ceiling"]
+    assert meta["seed_std"] == task["seed_std"]
+    # The validation oracle is the denominator every in-run claim is measured against, and
+    # it is NOT the hidden-test one. Confusing them overstates progress by a third.
+    assert meta["oracle_val_primary"] < meta["oracle_test_primary"]
+
+
 def test_tiering_matches_the_organisers_ranking():
     """The whole point of the retiering: losses before architecture.
 
@@ -255,7 +276,42 @@ def test_a_task_never_inherits_another_tasks_dead_ends():
 def test_improve_prompt_demands_one_change_and_warns_about_noise():
     text = (PROMPTS / "improve.md").read_text(encoding="utf-8").lower()
     assert "one focused change" in text
-    assert "0.0008" in text, "the agent must know what noise looks like"
+    # The agent must know that a small delta is not a result. The *number* comes from the
+    # task card (TaskSpec.seed_std), not from this file — see the staleness test below.
+    assert "noise" in text, "the agent must know what noise looks like"
+    assert "seed" in text, "say where run-to-run noise comes from, or it reads as hand-waving"
+
+
+#: Constants and identifiers that belong to KuaiRand-Pure specifically. A shared prompt that
+#: names one of these is telling every other task something false about itself.
+DATASET_SPECIFIC = (
+    "kuairand", "long_view", "gauc", "ndcg", "video_id", "author_id", "dur_bucket",
+    "0.0008", "0.6016", "0.5946", "0.8645", "0.8484",
+)
+
+
+@pytest.mark.parametrize("name", ["system", "draft", "improve", "repair"])
+def test_prompts_hold_no_dataset_specific_constants(name: str):
+    """One set of prompt files serves every task, so none of them may name one task's facts.
+
+    The failure this guards is silent and expensive, and we shipped it once: `improve.md`
+    hardcoded KuaiRand's five-seed std, which meant a regression task was told with authority
+    that a move of 0.001 in currency units was noise. Task-specific numbers reach the model
+    through the task card (`TaskSpec.baseline_val`, `ceiling`, `seed_std`) and task-specific
+    conclusions through that task's own `dead_ends` — never through the prose here.
+    """
+    text = (PROMPTS / f"{name}.md").read_text(encoding="utf-8").lower()
+    found = [tok for tok in DATASET_SPECIFIC if tok in text]
+    assert not found, f"{name}.md hardcodes KuaiRand-specific values: {found}"
+
+
+def test_system_prompt_demands_a_hypothesis_before_the_change():
+    """Innovation is scored on *why* the agent chose what it chose, and the journal can only
+    carry that if the prompt asks for it first. Without this the run produces code and no
+    reasoning, and the strongest evidence we have simply does not exist."""
+    text = (PROMPTS / "system.md").read_text(encoding="utf-8").lower()
+    assert "hypothesis" in text
+    assert "one thing" in text, "the system prompt must ask for one change per iteration"
 
 
 def test_repair_prompt_forbids_scope_creep():

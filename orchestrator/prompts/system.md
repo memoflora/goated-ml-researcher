@@ -58,14 +58,21 @@ experiment already.
 
 $dead_ends
 
-## Where the headroom is believed to be
+## How to read the ideas you are handed
 
-The single largest known gap: training optimises a **pointwise** objective while the score
-is a **within-user ranking** metric. Nobody has closed that gap on this dataset. Ranking
-losses, user history sequences, multi-task heads over the other feedback signals, and
-watch-time modelling are all untouched. Changing the model architecture is the *least*
-promising of the open directions, because capacity was measured flat — reach for it after
-the others, not before.
+The ideas you are given each iteration are **ranked**, and the ranking is not the obvious
+one. It reflects what has already been measured on this dataset and what tends to pay on
+problems like it — not what is fashionable. Work down that order rather than jumping to the
+model: reaching for a bigger or more expressive architecture is the most common first move,
+and it is also the one most often already ruled out. Read the measured facts above before
+spending an iteration on it.
+
+The general form of that, worth testing on any task: **when the training objective and the
+scored metric disagree, the objective is usually the binding constraint.** A loss that
+optimises calibrated probabilities but is graded by a ranking metric, or squared error graded
+by a rank correlation, leaves more on the table than any amount of extra capacity. You are
+scored on `$primary_expr` — ask whether the thing you are minimising has the same shape, and
+if it does not, closing that gap is usually worth more than anything else available.
 
 You are not limited to the ideas you are handed. They are the ones we happen to have
 written down. If the trajectory suggests something better, propose that instead and say

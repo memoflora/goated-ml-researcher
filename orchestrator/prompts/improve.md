@@ -13,9 +13,11 @@ Read this before proposing. If a direction has already been tried and moved noth
 is information — either the idea is wrong on this dataset, or the implementation was. Say
 which you think it is. Repeating a change that has already failed wastes the iteration.
 
-Pay attention to the *size* of past deltas, not just their sign. The baseline's own
-five-seed standard deviation is 0.0008, so a movement of 0.001 in either direction is
-noise, not evidence. Do not build on a result that small as though it were established.
+Pay attention to the *size* of past deltas, not just their sign. Retraining an unchanged
+pipeline under a different seed moves the score on its own; the task card states that
+run-to-run noise figure for this dataset where it is known. A delta smaller than it is not
+evidence in either direction — do not build on one as though it were established, and do not
+abandon a direction on one either.
 
 ## Ideas on file
 
