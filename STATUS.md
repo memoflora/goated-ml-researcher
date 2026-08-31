@@ -664,3 +664,43 @@ actual per-iteration token cost before committing to a 50-iteration official run
 
 `docs/devpost.md` is drafted with the agent-hypothesis quotes left as explicit
 placeholders. They can only be filled from a real journal.
+
+---
+
+# Checkpoint — first live agent runs (31 Aug)
+
+**The agent beat the baseline.** Best run: validation primary **0.6189**, +0.0173 over the
+official 0.6016, converged in 12 iterations for 124k tokens and 8.5 minutes, using a
+LambdaRank pairwise model it chose and wrote itself. That is roughly ten times the gain of
+our hand-written control.
+
+It took four live runs to get there, and every fix came from reading a journal:
+
+| run | result | what it taught |
+|---|---|---|
+| 1 | 0 scored | the data card sent it down a path that does not exist; the library block gave versions but not what those versions changed |
+| 2 | 0 scored | argparse missing `--subsample`; alignment broken after merges |
+| 3 | 0 scored | plumbing rewritten from scratch every draft — so we gave it a working skeleton |
+| 4 | **0.6189** | it works, given the contract for free and 20 iterations rather than 8 |
+| official 1 | 0.4839 | our own test-path veto selected for triviality; fixed |
+
+Not one of the 24 failures across runs 1-3 was a reasoning error. The agent diagnosed every
+error correctly. They were environment facts it had been told wrongly or not at all — which
+is a finding about *our prompts*, not about the model.
+
+## Still not true
+
+- No run has produced both a good score and a submittable artifact. Run 4 scored and could
+  not finalise; official run 1 finalised and scored below random.
+- 0.6189 is one run at temperature 1.0. Variance is unmeasured.
+- Everything is validation. The hidden test set has never been scored, and the guard is in
+  the code (`ALLOW_TEST_SCORING`), not in a promise.
+
+## Cost, measured
+
+~9.4k tokens and ~21s per iteration on the dev setting; the 24-iteration official run cost
+242k tokens in 14 minutes. Both ceilings (4M tokens, 6h) are comfortable.
+
+**95% of wall clock is model latency, not training.** The official run spent 360s executing
+pipelines and 839s in total. A faster model would shorten a run more than any pipeline
+optimisation.

@@ -13,6 +13,57 @@ not a patch.
 
 ---
 
+## Where we stand against the benchmark
+
+The bar is the organisers' Factorization Machine baseline. Everything below is
+**validation** — we have never scored the hidden test set, and the guard that stops us is
+in the code, not in a promise.
+
+| | primary | vs baseline | what it is |
+|---|---|---|---|
+| Random | 0.4834 | −0.118 | the floor |
+| Item popularity | 0.5807 | −0.021 | a 20-line heuristic |
+| **Official FM baseline** | **0.6016** | — | **the bar we must clear** |
+| Our reproduction of it | 0.6015 | −0.0001 | proves our stack scores correctly |
+| BPR-FM control (hand-written) | 0.6032 | +0.0016 | one human change, for calibration |
+| **Best autonomous agent run** | **0.6189** | **+0.0173** | run `r20260831-0532`, 12 iterations |
+| Oracle ceiling | 0.8484 | +0.247 | a *perfect* ranking, not 1.0 |
+
+**The agent has beaten the baseline.** Its best run reached 0.6189 — **+0.0173**, about ten
+times the gain of our hand-written control, and roughly 7% of the total headroom above the
+baseline. It converged in 12 iterations for 124k tokens and 8.5 minutes, and it got there
+with a LambdaRank pairwise model it chose and wrote itself.
+
+### What is not yet true
+
+**That run produced no submittable artifact.** It scored on `--split val` and then failed at
+finalisation, because its `--split test` branch — a code path no development iteration ever
+executes — used a pandas method removed in 2.x. The model was fine; the branch nothing had
+ever run was not.
+
+**Our only complete run so far is a bad one.** The first 50-iteration official run produced a
+valid 170,588-row submission scoring **0.4839** — below random, and worse than item
+popularity. The cause was ours, not the model's: a test-path check that disqualified any node
+whose test branch failed. Sophisticated pipelines break there far more often than trivial
+ones, so it systematically selected for triviality — it rejected a trained pairwise-nDCG model
+at 0.4959 and crowned one that ranked by video ID with 2.2 seconds of "training". That check
+no longer vetoes anything; it records the fault and repairs it at finalisation, against the
+node that actually won.
+
+So the honest position: **a model that clears the bar, and a submission pipeline that has not
+yet carried one across.** The next official run is the one that tests whether those two facts
+can hold at the same time.
+
+### Caveats we are not hiding
+
+- 0.6189 is **one run**. Draft temperature is 1.0, and a second dev run at the same settings
+  scored nothing at all. We have not yet established variance.
+- It trained on a **20% user subsample**. Scoring was on the full validation split, so the
+  comparison is fair, but a full-data run may land elsewhere.
+- **Validation is not hidden test.** The baseline itself drops 0.0070 between the two.
+
+---
+
 ## Quickstart — no API key, no dataset, under five minutes
 
 Everything below runs offline. The `smoke` mode pins the LLM, the sandbox and the evaluator
