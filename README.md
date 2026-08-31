@@ -23,7 +23,8 @@ the code (`ALLOW_TEST_SCORING`), not in a promise.
 | **Official FM baseline** | **0.6016** | — |
 | Our reproduction of it | 0.6015 | −0.0001 |
 | BPR-FM control (hand-written) | 0.6032 | +0.0016 |
-| ~~Best autonomous run~~ | ~~0.6189~~ | **withdrawn — label leakage** |
+| ~~Leaked run~~ | ~~0.6189~~ | ~~+0.0173~~ **withdrawn — leakage** |
+| **Best clean agent run** — gpt-5.1 | **0.5918** | **−0.0098** |
 | Oracle ceiling (a *perfect* ranking) | 0.8484 | +0.247 |
 
 > ⚠️ **Two of our headline numbers were label leakage and have been withdrawn.** A run
@@ -39,16 +40,21 @@ objective mismatch, the organisers' own top-ranked untested direction:
 > GAUC and nDCG@5. By switching to a pairwise loss function and weighting the pairs by the
 > change in nDCG@5 they cause…"* — `n011`, run `r20260831-0532`
 
-But the score that reasoning produced was contaminated. **We have not yet demonstrated a
-legitimate score above the baseline**; the first run on the leak-proof harness is in progress.
+But the score that reasoning produced was contaminated. Our one clean result, `gpt-5.1` on
+the fixed harness, **converged at 0.5918 — above the 0.5807 item-popularity heuristic and
+0.0098 short of the baseline**, in 13 of 50 iterations for 270k tokens and zero interventions.
+It stopped because it stopped improving, not because it ran out of budget.
 
 **Read progress against 0.8484, not 1.0.** 27.1% of test users have no positive label, so
 their nDCG is 0 for any model.
 
 ### What is not yet true
 
-- **No legitimate score above the baseline yet.** Every number that beat 0.6016 turned out to
-  be leakage. The first run on the leak-proof harness is in progress.
+- **The agent has not beaten the baseline cleanly.** Its one defensible run reached 0.5918,
+  short by 0.0098. Every number that exceeded 0.6016 was leakage.
+- **That run produced no submission**: the winner's `--split test` branch died with a native
+  crash (`0xC0000005`) inside LightGBM on the larger train+validation fit, which the repair
+  loop could not act on because there was no Python error to read.
 - **Two failure modes are fixed but unproven together.** One run scored well and could not
   finalise (its `--split test` branch had never executed); another finalised and scored below
   random (our own test-path check selected for triviality). Both are fixed; no single run has

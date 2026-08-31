@@ -38,7 +38,7 @@ tolerance: running the organisers' own untouched `baseline.py` on this machine g
 | run `r20260831-0532`, gpt-4o | 0.6189 | +0.0173 | no | **NO — leaked** |
 | run `r20260831-0633`, gpt-4o | 0.4839 | −0.1177 | yes | yes, but search was biased |
 | run `r20260831-0708`, gpt-4o | 0.8484 | +0.2468 | yes | **NO — leaked** |
-| run `r20260831-0741`, gpt-5.1 | *pending* | *pending* | *pending* | **yes — masked harness** |
+| run `r20260831-0741`, **gpt-5.1** | **0.5918** | **−0.0098** | no (crash) | **YES — first clean result** |
 
 ### Why 0.6189 and 0.8484 must not be reported
 
@@ -56,35 +56,62 @@ direction. Quote the hypothesis; do not quote the score.
 - The harness reproduces the benchmark ladder exactly, so our measurements are trustworthy.
 - A hand-written single-change control (`reference/bpr_fm.py`) beats the baseline by +0.0016,
   and established that **pair-sampling weight decides the sign** of a ranking loss.
-- The agent runs unattended to convergence with **zero manual interventions**, recovers from
-  every injected fault class, and produces a schema-valid 170,588-row submission.
-- **We have not yet demonstrated a legitimate score above 0.6016 from the agent.** Every
-  number that did so was leakage. The gpt-5.1 run is the first honest attempt.
+- The agent runs unattended to convergence with **zero manual interventions** and recovers
+  from every injected fault class. A schema-valid 170,588-row submission has been produced
+  (run `r20260831-0633`), so the submission path works — just not yet in the same run as a
+  good score.
+- **The agent has not beaten the baseline on a clean harness.** Its one defensible result is
+  0.5918, which is 0.0098 short. Every number that exceeded 0.6016 was leakage.
 
 ---
 
-## Fill this in before submitting
+## The one clean result — `r20260831-0741`, gpt-5.1
 
-From `runs/r20260831-0741/summary.json`:
+The first run on the leak-proof harness, and therefore the only agent number we can defend.
 
 | field | value |
 |---|---|
-| model | `gpt-5.1` |
-| iterations used (of 50) | |
-| best validation GAUC | |
-| best validation nDCG@5 | |
-| best validation primary | |
-| **absolute delta vs 0.6016** | |
-| tokens in / out / total | |
-| agent wall-clock (s) | |
+| model | `gpt-5.1` (16 calls, no fallback) |
+| stop reason | **converged** at iteration **13 of 50** |
+| best node | `n009` |
+| validation GAUC | **0.65445** (baseline 0.6674, **−0.0130**) |
+| validation nDCG@5 | **0.52924** (baseline 0.5357, **−0.0065**) |
+| **validation primary** | **0.59184** (baseline 0.6016, **−0.0098**) |
+| tokens in / out / total | 181,363 / 88,715 / **270,078** |
+| agent wall-clock | **6,514 s** (1 h 49 m), of which **5,630 s executing pipelines** |
 | GPU-hours | **0 — CPU only** |
 | manual interventions | **0** |
-| final submission valid | |
+| final submission | **none — the final-seed runs crashed** |
 
-Trajectory so far: iteration 1 → 0.49301, iteration 4 → 0.58458.
+**It did not beat the baseline.** It converged 0.0098 short, having climbed
+0.58458 → 0.56031 → 0.59073 → **0.59184** → 0.59040 → 0.59184 and then stopped improving by
+more than ε = 0.002 over three scored iterations. That is the convergence rule working, not a
+budget running out: it used 13 of 50 iterations and 270k of a 4M token budget.
 
-Then regenerate the formatted table:
+**No submission was produced.** The winner's `--split test` branch crashed with a Windows
+access violation (`0xC0000005`) — a native segfault inside LightGBM on the larger train+valid
+fit, not a Python error. The repair loop tried three times and got the same crash each time;
+all three final seeds then failed the same way.
 
-```bash
-python -m orchestrator.report runs/r20260831-0741
-```
+Worth noting what *did* work here: the test-path probe fired correctly at iterations 10, 11
+and 13, recorded the branch as broken, and — after the fix — left the node eligible to win on
+the metric anyway. The earlier version of that check would have thrown away the best model.
+The probe did its job; the underlying crash is a separate, unfixed problem.
+
+### How this compares
+
+| | primary | notes |
+|---|---|---|
+| item popularity | 0.5807 | a 20-line heuristic |
+| **gpt-5.1 agent, clean** | **0.5918** | beats the heuristic, short of the baseline |
+| official FM baseline | 0.6016 | the bar |
+| our hand-written BPR control | 0.6032 | one human change |
+
+The agent beat a trivial heuristic and fell short of a tuned baseline. That is the honest
+position, and it is what should go in the writeup.
+
+---
+
+## Still to fill in
+
+If another clean run is completed, record it here in the same shape.

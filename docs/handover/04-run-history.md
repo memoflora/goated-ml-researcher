@@ -71,13 +71,31 @@ uncovered the leak. Full account in [03-findings.md](03-findings.md) §1. Re-run
 completed mask, the same pipeline scores **0.4794**, below random, with correlation to the
 truth falling from 0.98931 to −0.03989.
 
-### Official run on gpt-5.1 — first on a leak-proof harness
+### Official run on gpt-5.1 — the one clean result
 
-`r20260831-0741` · in progress at time of writing · `TECHJAM_MODEL=gpt-5.1`
+`r20260831-0741` · 13 iterations of 50 · converged · 270,078 tokens · 6,514 s · `gpt-5.1`
 
-The first run where a score above baseline would mean something. Trajectory so far:
-iteration 1 → 0.49301, iteration 4 → 0.58458. **Fill in the final numbers from
-`runs/r20260831-0741/summary.json` before submitting.**
+The first run on the leak-proof harness, and the only agent number we can defend.
+
+**Validation primary 0.59184** — GAUC 0.65445, nDCG@5 0.52924 — which is **0.0098 short of
+the 0.6016 baseline**, and above the 0.5807 item-popularity heuristic. Trajectory:
+0.58458 → 0.56031 → 0.59073 → **0.59184** → 0.59040 → 0.59184, then converged under the
+ε = 0.002 / N = 3 rule. It stopped because it stopped improving, not because it ran out of
+budget: 13 of 50 iterations, 270k of 4M tokens.
+
+**No submission.** The winner's `--split test` branch died with a Windows access violation
+(`0xC0000005`) — a native crash inside LightGBM on the larger train+validation fit, not a
+Python error, so the repair loop had nothing textual to work with. Three repair attempts and
+all three final seeds hit the same crash.
+
+The test-path probe worked correctly: it flagged the broken branch at iterations 10, 11 and 13
+and left the node eligible to win on the metric. The earlier, vetoing version of that check
+would have discarded the best model. The probe is not the problem here; the segfault is, and
+it is unfixed.
+
+Note the cost profile inverted versus gpt-4o: **5,630 s of the 6,514 s was executing
+pipelines**, not waiting on the model. gpt-5.1 writes heavier pipelines and the run was on
+full data.
 
 ## Reading the table of contents
 
@@ -86,7 +104,7 @@ iteration 1 → 0.49301, iteration 4 → 0.58458. **Fill in the final numbers fr
 | r20260831-0532 | 0.6189 | no | **no — leaked** |
 | r20260831-0633 | 0.4839 | yes | yes, but the search was biased |
 | r20260831-0708 | 0.8484 | yes | **no — leaked** |
-| r20260831-0741 | *pending* | *pending* | **yes — masked harness** |
+| r20260831-0741 | **0.5918** | no (crash) | **yes — the clean result** |
 
 ## Cost, measured
 
