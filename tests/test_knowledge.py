@@ -319,3 +319,47 @@ def test_repair_prompt_forbids_scope_creep():
     assert "change nothing else" in text
     for cls in ("syntax", "import", "contract", "timeout", "oom"):
         assert cls in text, f"repair.md gives no guidance for error_class={cls}"
+
+
+class TestLiveRunLessons:
+    """Guards for the two failure modes the first live run actually exhibited.
+
+    Both cost real iterations and real tokens: gpt-4o's first pipeline appended
+    `KuaiRand-Pure/data/` to a --data-dir that already ended there, and six of eight
+    iterations died on APIs removed in the major versions we pin.
+    """
+
+    def test_the_data_card_does_not_send_the_agent_down_a_nested_path(self):
+        from orchestrator.datacard import kuairand_card
+
+        card = kuairand_card("data/KuaiRand-Pure/data")
+        assert "directly inside the directory passed as `--data-dir`" in card, (
+            "the card must state that --data-dir already holds the CSVs; leading with a "
+            "nested path is what caused the FileNotFoundError on the first live run"
+        )
+        # It may still *name* the nested path to warn against it, but never as the
+        # primary instruction.
+        assert "do not append" in card
+
+    def test_the_library_block_warns_about_the_removals_that_bit_us(self):
+        from orchestrator.agent import _whitelist_block
+
+        class _Ctx:
+            library_whitelist = ["numpy==2.4.1", "pandas==2.3.3", "lightgbm==4.7.0"]
+
+        text = _whitelist_block(_Ctx())
+        for marker in ("DataFrame.append", "verbose_eval", "early_stopping_rounds",
+                       "callbacks="):
+            assert marker in text, f"library block no longer warns about {marker}"
+
+    def test_the_warnings_ride_in_the_cached_block_not_per_call(self):
+        """They are static, so they belong in the block that is billed once per run.
+        Feasibility is scored on tokens; repeating this every iteration would waste them.
+        """
+        from pathlib import Path
+
+        src = Path("orchestrator/agent.py").read_text(encoding="utf-8")
+        i = src.index("_API_NOTES")
+        j = src.index("def _system_blocks")
+        # _API_NOTES is consumed by _whitelist_block, which _system_blocks caches.
+        assert "_whitelist_block" in src[:i] or "_whitelist_block" in src[i:j + 2000]
