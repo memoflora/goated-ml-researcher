@@ -501,6 +501,7 @@ class Orchestrator:
             seed=self.seed,
             timeout_s=self.timeout_s,
             subsample=self.subsample,
+            **self._exec_task_kwargs(),
         )
         node.exec_result = result
         self.acct.add_exec(result.wall_s)
@@ -527,13 +528,13 @@ class Orchestrator:
             self._handle_failure(node, "contract", "pipeline exited 0 but produced no submission")
             return
 
-        ok, msg = self.evaluator.validate(submission, "val")
+        ok, msg = self.evaluator.validate(submission, "val", *self._eval_task_args())
         if not ok:
             self._handle_failure(node, "contract", f"submission failed validation: {msg}")
             return
 
         try:
-            metrics = dict(self.evaluator.score(submission, "val"))
+            metrics = dict(self.evaluator.score(submission, "val", *self._eval_task_args()))
         except Exception as exc:  # noqa: BLE001 - a scorer crash is the node's problem
             self._handle_failure(node, "eval", f"scoring raised {type(exc).__name__}: {exc}")
             return
@@ -689,8 +690,13 @@ class Orchestrator:
                     kind=n.kind,
                     hypothesis=hyp[:MAX_HYPOTHESIS_CHARS],
                     primary=p,
+                    # A task need not have a published baseline — most do not. Indexing
+                    # this directly crashed the loop on iteration 1 for any task without
+                    # one, which is the common case outside a benchmark.
                     delta_vs_baseline=(
-                        round(p - self.task.baseline_val["primary"], 4) if p is not None else None
+                        round(p - self.task.baseline_val["primary"], 4)
+                        if p is not None and "primary" in self.task.baseline_val
+                        else None
                     ),
                     status=n.status,
                     error_class=(n.exec_result.error_class if n.exec_result else None),
@@ -707,10 +713,51 @@ class Orchestrator:
             tokens_out_used=self.acct.tokens_out,
         )
 
+    def _eval_task_args(self) -> tuple:
+        """Pass the task to `score()` / `validate()` when the evaluator accepts one.
+
+        Without it every non-KuaiRand submission is rejected against KuaiRand's header —
+        as a `contract` error, so the agent is told to "fix" a file that was already
+        correct, three times, and then the node dies. Positional and optional, so a stub
+        evaluator on the frozen two-argument seam is untouched.
+        """
+        cfg = getattr(self.task, "config", None)
+        if cfg is None or self.evaluator is None:
+            return ()
+        try:
+            import inspect
+
+            params = inspect.signature(self.evaluator.validate).parameters
+        except (TypeError, ValueError):
+            return ()
+        return (cfg,) if "task" in params else ()
+
+    def _data_card_args(self) -> tuple:
+        """Pass the task to `data_card()` when it can take one.
+
+        Without this the agent is handed KuaiRand's card whatever task it is running —
+        which does not fail loudly, it just makes the model confidently write a pipeline
+        for the wrong dataset. The first demo-regression run opened
+        `video_features_basic_pure.csv` looking for `author_id`.
+        """
+        cfg = getattr(self.task, "config", None)
+        if cfg is None or self.datacard is None:
+            return ()
+        try:
+            import inspect
+
+            if not inspect.signature(self.datacard.data_card).parameters:
+                return ()
+        except (TypeError, ValueError):
+            return ()
+        return (cfg,)
+
     def data_card(self) -> str:
         if self._data_card is None:
             try:
-                self._data_card = self.datacard.data_card() if self.datacard else ""
+                self._data_card = (
+                    self.datacard.data_card(*self._data_card_args()) if self.datacard else ""
+                )
             except Exception as exc:  # noqa: BLE001 - run without a data card rather than not at all
                 self._data_card = ""
                 self.journal.emit(
@@ -732,6 +779,78 @@ class Orchestrator:
             )
         return self._data_card
 
+    def _exec_task_kwargs(self) -> dict:
+        """Tell the sandbox this task's submission header, when it can accept it.
+
+        Its structural pre-check compares the CSV header against a constant. On any task
+        but KuaiRand that constant is wrong, so every valid submission would come back as
+        a `contract` error and every node would die after three repairs. Passed as a kwarg
+        dict so a stub executor with the frozen signature is unaffected.
+        """
+        try:
+            import inspect
+
+            params = inspect.signature(self.executor.run).parameters
+        except (TypeError, ValueError):
+            return {}
+
+        out: dict = {}
+        cols = getattr(self.task, "submission_columns", None)
+        if cols and "header_columns" in params:
+            out["header_columns"] = tuple(cols)
+        # The sandbox otherwise defaults --data-dir to the literal "data", so a pipeline
+        # was handed the repo's data root and had to go hunting for its own dataset. The
+        # first real run lost an iteration to exactly that.
+        if "data_dir" in params:
+            out["data_dir"] = Path(self._pipeline_data_dir())
+        return out
+
+    def _pipeline_data_dir(self) -> Path:
+        """Where the generated pipeline should look for its data.
+
+        For a generic task this is the *materialised* split directory, not the raw source:
+        one CSV per split, written once, so the pipeline never has to reproduce our
+        permutation to get the same rows we score it on. KuaiRand keeps its raw directory,
+        because there the splits are date filters the starter kit already defines.
+        """
+        cfg = getattr(self.task, "config", None)
+        if cfg is None or getattr(cfg.data, "loader", "") == "starter_kit":
+            return Path(self.task.data_dir)
+        try:
+            from orchestrator import datasource as ds
+
+            return ds.materialise(cfg)
+        except Exception as exc:  # noqa: BLE001 - fall back rather than lose the run
+            self.journal.emit(
+                {
+                    "event": "error",
+                    "iteration": self.iteration,
+                    "error_class": "data",
+                    "error_excerpt": f"materialise() failed: {type(exc).__name__}: {exc}",
+                    "recovery": "raw_data_dir",
+                }
+            )
+            return Path(self.task.data_dir)
+
+    def _ideas_path_kwarg(self) -> dict:
+        """Route `retrieve()` at this task's own idea bank, when it names one.
+
+        Passed as a kwarg dict rather than an argument so that a `retrieve()` which does
+        not accept `path` — a stub, or an older signature — keeps working untouched.
+        """
+        cfg = getattr(self.task, "config", None)
+        path = getattr(cfg, "ideas_path", None) if cfg is not None else None
+        if path is None:
+            return {}
+        try:
+            import inspect
+
+            if "path" not in inspect.signature(self.knowledge.retrieve).parameters:
+                return {}
+        except (TypeError, ValueError):
+            return {}
+        return {"path": str(path)}
+
     def ideas(self, k: int = 5) -> list[Idea]:
         if self.knowledge is None:
             return []
@@ -750,6 +869,7 @@ class Orchestrator:
                     best_metrics=dict(best.metrics or {}) if best else {},
                     budget_left=max(0, self.task.max_iters - self.iteration),
                     k=k,
+                    **self._ideas_path_kwarg(),
                 )
             )
         except Exception as exc:  # noqa: BLE001 - no ideas is survivable, a crash is not
@@ -961,7 +1081,8 @@ class Orchestrator:
             )
             try:
                 res = self.executor.run(
-                    seed_node, split="test", seed=seed, timeout_s=self.timeout_s, subsample=None
+                    seed_node, split="test", seed=seed, timeout_s=self.timeout_s,
+                    subsample=None, **self._exec_task_kwargs(),
                 )
             except Exception as exc:  # noqa: BLE001 - one bad seed must not lose the run
                 self.journal.emit(
@@ -989,7 +1110,7 @@ class Orchestrator:
                     }
                 )
                 continue
-            ok, msg = self.evaluator.validate(sub, "test")
+            ok, msg = self.evaluator.validate(sub, "test", *self._eval_task_args())
             if not ok:
                 self.journal.emit(
                     {
@@ -1017,8 +1138,12 @@ class Orchestrator:
             return out
 
         final_csv = final_dir / "submission.csv"
-        rank_average(produced, final_csv)
-        ok, msg = self.evaluator.validate(final_csv, "test")
+        # Ranking tasks average ranks; anything where the predicted value is itself
+        # graded must average values instead.
+        rank_average(
+            produced, final_csv, rank=getattr(self.task, "kind", "ranking") == "ranking"
+        )
+        ok, msg = self.evaluator.validate(final_csv, "test", *self._eval_task_args())
         out["submission"], out["valid"] = final_csv, ok
         self.journal.emit(
             {
@@ -1037,41 +1162,58 @@ class Orchestrator:
         return out
 
 
-def rank_average(submissions: list[Path], out_path: Path) -> None:
-    """Rank-average several seed submissions into one.
+def rank_average(submissions: list[Path], out_path: Path, *, rank: bool = True) -> None:
+    """Combine several seed submissions into one.
 
-    Ranks, not raw scores: only relative order is scored, and ranks are immune
-    to a seed whose scores happen to live on a different scale.
+    Two modes, and picking the wrong one silently ruins the submission:
+
+    - `rank=True` (ranking tasks) averages normalised **ranks**. Only relative order is
+      scored, and ranks are immune to a seed whose scores land on a different scale.
+    - `rank=False` (regression, and anything where the value itself is graded) averages
+      the **values**. Rank-averaging a regression submission replaces every prediction
+      with a number between 0 and 1, which validates cleanly and scores catastrophically.
+
+    Column count comes from the file, so any submission schema works.
     """
     tables: list[list[float]] = []
-    header = "row_id,user_id,video_id,score"
-    keys: list[tuple[str, str]] = []
+    header = ""
+    prefixes: list[str] = []
+
     for path in submissions:
         rows = path.read_text(encoding="utf-8").splitlines()
         header = rows[0]
-        scores, ids = [], []
+        n_cols = len(header.split(","))
+        values, keys = [], []
         for line in rows[1:]:
             if not line.strip():
                 continue
-            _row_id, user_id, video_id, score = line.split(",")
-            scores.append(float(score))
-            ids.append((user_id, video_id))
-        tables.append(scores)
-        if not keys:
-            keys = ids
+            parts = line.rstrip("\r\n").split(",")
+            if len(parts) != n_cols:
+                raise ValueError(
+                    f"{path.name}: line has {len(parts)} fields, header has {n_cols}"
+                )
+            values.append(float(parts[-1]))
+            keys.append(",".join(parts[:-1]))  # everything but the prediction
+        tables.append(values)
+        if not prefixes:
+            prefixes = keys
+
     n = min(len(t) for t in tables)
-    ranked: list[list[float]] = []
-    for scores in tables:
-        order = sorted(range(n), key=lambda i: scores[i])
-        rank = [0.0] * n
-        for position, index in enumerate(order):
-            rank[index] = position / max(1, n - 1)
-        ranked.append(rank)
+    if rank:
+        combined: list[list[float]] = []
+        for values in tables:
+            order = sorted(range(n), key=lambda i: values[i])
+            r = [0.0] * n
+            for position, index in enumerate(order):
+                r[index] = position / max(1, n - 1)
+            combined.append(r)
+    else:
+        combined = [t[:n] for t in tables]
+
     lines = [header]
     for i in range(n):
-        mean = sum(r[i] for r in ranked) / len(ranked)
-        user_id, video_id = keys[i]
-        lines.append(f"{i},{user_id},{video_id},{mean:.6f}")
+        mean = sum(c[i] for c in combined) / len(combined)
+        lines.append(f"{prefixes[i]},{mean:.6f}")
     atomic_write(out_path, "\n".join(lines) + "\n")
 
 

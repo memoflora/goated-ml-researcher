@@ -261,7 +261,10 @@ class Agent:
         """The static block, cached. Identical on every call in a run, so from the
         second call onward it is billed as a cache read instead of input."""
         static = "\n\n".join([
-            self._prompt_text("system"),
+            # The system prompt is templated too: it states the submission contract, and
+            # that contract is per task. Rendering it raw silently told every task to
+            # write KuaiRand's header.
+            Template(self._prompt_text("system")).safe_substitute(_task_values(ctx)),
             _task_card(ctx),
             "## Data card\n\n" + (ctx.data_card or "(data card not available)"),
             _whitelist_block(ctx),
@@ -271,6 +274,7 @@ class Agent:
 
     def _render(self, kind: str, ctx: Context, variables: dict) -> str:
         values = {
+            **_task_values(ctx),
             "run_id": ctx.run_id,
             "iteration": ctx.iteration,
             "budget": _fmt_budget(ctx),
@@ -293,7 +297,8 @@ class Agent:
     def _prompt_text(self, name: str) -> str:
         path = self.prompt_dir / f"{name}.md"
         if path.is_file():
-            return path.read_text()
+            # Explicit utf-8: prompts carry em dashes, and Windows would decode cp1252.
+            return path.read_text(encoding="utf-8")
         return _FALLBACK_PROMPTS[name]
 
     def prompt_size(self, kind: str, ctx: Context, variables: dict | None = None) -> int:
@@ -625,16 +630,110 @@ print("RESULT_JSON " + json.dumps(
 # --------------------------------------------------------------------------- #
 
 def _task_card(ctx: Context) -> str:
+    """The standing description of what is being solved.
+
+    Every fact here comes off the `TaskSpec`, which is built from `tasks/<name>.yaml`.
+    It used to be a hardcoded paragraph about ranking `long_view`, which quietly made the
+    agent unusable on any other problem — and, worse, would have described the wrong task
+    while still looking like a working prompt.
+    """
     t = ctx.task
-    return (
-        f"## Task\n\n"
-        f"Benchmark `{t.name}`. Rank each user's logged impressions by predicted "
-        f"`long_view`. Scored on {' and '.join(t.metrics)}; primary is their mean.\n\n"
-        f"- Official baseline (validation): {_fmt_metrics(t.baseline_val)}\n"
-        f"- Attainable ceiling: primary {t.ceiling:.4f} — not 1.0. Roughly a quarter "
-        f"of users have no positive label, so their nDCG is 0 for any model.\n"
-        f"- Development uses train and validation only. The test split is hidden.\n"
+    lines = [f"## Task\n\nBenchmark `{t.name}` ({getattr(t, 'kind', 'ranking')})."]
+
+    description = (getattr(t, "description", "") or "").strip()
+    if description:
+        lines.append("\n" + description)
+
+    lines.append(
+        f"\nScored on {', '.join(f'`{m}`' for m in t.metrics)}. "
+        f"`primary` is what the search maximises: {_primary_expr(t)}."
     )
+    if t.baseline_val:
+        lines.append(f"- Baseline to beat (validation): {_fmt_metrics(t.baseline_val)}")
+    if getattr(t, "ceiling", None) is not None:
+        lines.append(
+            f"- Attainable ceiling: primary {t.ceiling:.4f} — not 1.0. "
+            "Judge progress against that number."
+        )
+    if getattr(t, "seed_std", None):
+        lines.append(
+            f"- Run-to-run noise of a fixed pipeline is about {t.seed_std:.4f}. "
+            "A smaller difference than that is not a result."
+        )
+    lines.append("- Development uses train and validation only. The test split is held out.")
+    return "\n".join(lines) + "\n"
+
+
+def _fmt_dead_ends(cfg) -> str:
+    """The task's measured-false claims, for the cached system block.
+
+    These used to be typed into `system.md` as KuaiRand prose, which meant a second task
+    would have inherited another dataset's conclusions as if they were its own. They now
+    come from that task's idea bank, so an empty bank simply yields nothing.
+    """
+    try:
+        from orchestrator.knowledge import dead_ends
+    except ImportError:
+        return "(none recorded yet)"
+    path = getattr(cfg, "ideas_path", None) if cfg is not None else None
+    try:
+        entries = dead_ends(str(path) if path else None)
+    except Exception:  # noqa: BLE001 - a broken bank must not kill the run
+        return "(none recorded yet)"
+    if not entries:
+        return "(none recorded yet)"
+    return "\n\n".join(f"- **{d.claim}** {d.verdict}" for d in entries)
+
+
+def _task_values(ctx: Context) -> dict:
+    """Task-derived `$placeholders` available to every prompt, system.md included.
+
+    These are what let one set of prompt files serve any task. D writes the words; the
+    values come off the `TaskSpec`, which comes off `tasks/<name>.yaml`.
+    """
+    t = ctx.task
+    cols = tuple(getattr(t, "submission_columns", ("row_id", "user_id", "video_id", "score")))
+    pred = getattr(t, "prediction_column", "score")
+    group = None
+    cfg = getattr(t, "config", None)
+    if cfg is not None:
+        group = getattr(cfg.data, "group", None)
+
+    if group:
+        subsample_note = (
+            f"sampling whole **{group}** groups, not rows. Row sampling silently breaks "
+            f"the grouped metrics, which are computed within a {group}."
+        )
+        order_note = f"only the relative order within a `{group}` matters"
+    else:
+        subsample_note = "sampling **rows** uniformly at random with the given seed."
+        order_note = "the value itself matters, not just its rank"
+
+    return {
+        "dead_ends": _fmt_dead_ends(cfg),
+        "task_name": t.name,
+        "task_kind": getattr(t, "kind", "ranking"),
+        "task_description": (getattr(t, "description", "") or "").strip(),
+        "submission_header": ",".join(cols),
+        "prediction_column": pred,
+        "group_column": group or "",
+        "subsample_note": subsample_note,
+        "order_note": order_note,
+        "metric_names": ", ".join(t.metrics),
+        "primary_expr": _primary_expr(t),
+    }
+
+
+def _primary_expr(t) -> str:
+    """Write `primary` out as a signed expression so its direction is never ambiguous."""
+    parts = getattr(t, "primary_parts", None) or tuple(t.metrics)
+    try:
+        from orchestrator import metrics as _M
+
+        terms = [(p if _M.get(p).greater_is_better else f"-{p}") for p in parts]
+    except (ImportError, KeyError):
+        terms = list(parts)
+    return terms[0] if len(terms) == 1 else "mean of " + ", ".join(terms)
 
 
 def _whitelist_block(ctx: Context) -> str:
@@ -805,3 +904,41 @@ _FALLBACK_PROMPTS = {
         "Submit the complete corrected file."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Module-level seam. OWNER: B — added by C to unblock the first real run.
+#
+# contracts.md §3 freezes this seam as module functions:
+#     draft(ctx) -> Proposal / improve(ctx, parent) / repair(ctx, node)
+# but they landed only as methods on `Agent`. A's run.py resolves each seam with
+# hasattr(module, name), so the probe failed and every run silently fell back to
+# StubAgent — completing, journalling and reporting success having never called
+# the LLM. These restore the frozen shape; `Agent` itself is unchanged.
+# ---------------------------------------------------------------------------
+
+_DEFAULT: Agent | None = None
+
+
+def get_agent(**kwargs) -> Agent:
+    """The shared Agent, built on first use.
+
+    Never at import time: run.py imports this module merely to probe the seam,
+    and constructing a client needs an API key a stubbed smoke run does not have.
+    """
+    global _DEFAULT
+    if _DEFAULT is None or kwargs:
+        _DEFAULT = Agent(**kwargs)
+    return _DEFAULT
+
+
+def draft(ctx: Context) -> Proposal:
+    return get_agent().draft(ctx)
+
+
+def improve(ctx: Context, parent: Node) -> Proposal:
+    return get_agent().improve(ctx, parent)
+
+
+def repair(ctx: Context, node: Node) -> Proposal:
+    return get_agent().repair(ctx, node)

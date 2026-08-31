@@ -25,6 +25,55 @@ four decimals on every rung — val 0.6015, test 0.5953, pop 0.5807/0.5715, rand
 same early stop at epoch 11, 25 s wall-clock. Two OSes, two Python versions, same numbers, so
 the reproduction is a property of the harness and not of one machine.
 
+## Task-agnostic layer (C, H+30) — `feat/c-task-agnostic`
+
+The orchestrator no longer assumes KuaiRand. A problem is now `tasks/<name>.yaml`; everything
+downstream reads its facts from there. **KuaiRand is unchanged in behaviour** — same loader,
+same starter-kit metrics, same hand-tuned card, same numbers — it is just one task file now.
+
+```bash
+python -m orchestrator.run --list-tasks
+python -m orchestrator.run --task demo-regression --mode dev
+```
+
+**New (all C-owned):** `taskspec.py` (config), `metrics.py` (14 metrics with directions),
+`datasource.py` (loading, 4 split strategies, materialising), `profile.py` (automatic EDA),
+`tasks/` (2 task files + `tasks/ideas/generic-tabular.yaml`, 21 domain-free ideas),
+`tools/make_demo_data.py`, `tests/test_taskspec.py` (27 tests).
+
+**Proof it works, not a claim:** a 3-iteration run on `demo-regression` — a synthetic rent
+dataset with a continuous target, no groups, RMSE, a random split and a 3-column submission —
+wrote a working pipeline, scored, and produced a validated submission. RMSE 20.03, r² 0.998,
+20k tokens, 89 s, 0 interventions. The generic `gauc`/`ndcg@5` implementations were checked
+against the starter kit on all 124,909 real validation rows: **identical to 4e-16**.
+
+The auto-profiler planted two traps in that dataset and caught both — a constant column and a
+leakage-grade one. Worth reading the journal: node `n000` cited `T0.drop-flagged-columns` and
+dropped them; node `n001` reasoned about the leak explicitly and **kept it anyway**, which is
+why r² is 0.998. The warning worked; one branch chose to exploit it.
+
+### Bugs this flushed out — every one silent
+
+| Where | What | Why it mattered |
+|---|---|---|
+| `agent.py` | seam existed only as `Agent` methods; `run.py` probes with `hasattr` | **every run silently used `StubAgent`** and reported success having never called the LLM |
+| `requirements.txt` | no `pyyaml` / `matplotlib` / `pandas` | D's whole idea bank absent from every prompt; `trajectory.png` never written |
+| `sandbox.py` | Python 3.13 colours tracebacks | ANSI codes split every classifier pattern — 3 fault cases misclassified, a direct Robustness hit |
+| `core.py` | `data_card()` called with no task | the agent got **KuaiRand's card on a regression task** and opened `video_features_basic_pure.csv` |
+| `core.py` | `validate()`/`score()` called with no task | correct submissions rejected against KuaiRand's header, three repairs, node dead |
+| `core.py` | `baseline_val["primary"]` indexed directly | crashed on iteration 1 for any task without a published baseline |
+| `core.py` | `rank_average` unpacked exactly 4 columns, always ranked | rank-averaging a regression submission replaces every prediction with a number in [0,1] — validates cleanly, scores catastrophically |
+| `sandbox.py` | `check_submission` hardcoded the header and `parts[3]` | rejected every non-KuaiRand submission; `IndexError` on a narrower one |
+| `pyproject.toml` | `target-version = "py311"` vs A's 3.10 support | ruff demanded `datetime.UTC`, which would have broken the portability work |
+
+`make check` is **green**: 281 tests, 0 failures, ruff clean.
+
+### Still to do
+
+- `--subsample` user-sampling helper (C's, still open from before)
+- KuaiRand-1k as a task file — now genuinely a folder swap, and it is bonus points
+- Nobody has run `official` yet. That is still the critical path, and it has not moved.
+
 ## A — ML Engineer: Orchestrator & Run
 
 - [x] `contracts.py` + `journal.py` + stubs frozen (H+2) — **shipped, unblocking B/C/D**
@@ -197,9 +246,37 @@ key. `TECHJAM_MODEL` is mandatory on OpenAI — see the contract note. `make che
 - [x] `splits.py` — cached split loader, 3.7 s cold → 0.085 s warm
 - [x] `requirements-pipeline.txt` — the import whitelist for generated code
 - [x] 39 unit tests, 1.0 s
-- now: idle on my critical path — everything C owns for Phase 0/1 is landed and green.
-- blocked on: nothing. Next up unless someone needs otherwise: seed-averaged scoring helper
-  for A's final selection, and a `--subsample` user-sampling helper the agent can copy.
+- [x] **data card now names the files on disk** (H+30) — see below, this was costing iterations
+- [x] `trajectory.png` actually renders, with the ceiling line and the seed-noise band
+- [x] `make report RUN=<id>` works again; `report.py` reads the journal as explicit utf-8
+- [x] full-data pipeline on cached features: **24 s**, so the "under 5 minutes" box is ticked
+- now: C is clean — 0 lint findings, `test_datacard`/`test_evaluator`/`test_report` all green.
+- blocked on: nothing. Seed-averaging turned out to be A's already (`final_seeds=(0,1,2)` in
+  `official`), so it is off my list.
+
+**The first real run flushed out a gap in my data card that was costing iterations.**
+Run `r20260830-0317-2`, node `n000`, failed with `error_class=data`:
+
+```
+FileNotFoundError: Could not find val interaction csv under .../data
+```
+
+The card described the splits statistically but never named a single file. `log_standard`
+appeared **zero times** in 5,783 characters. So the agent invented a `find_interaction_file`
+heuristic, guessed the layout wrong, and burned an iteration before repairing itself. In the
+50-iteration official run every draft would have paid that toll — 3 drafts plus their repairs.
+
+The card now carries a `## Files on disk` section: all six CSVs with exact names and verified
+row counts, the fact that validation and test live *interleaved in one file* and must be split
+by the `date` column, the `row_id` ordering rule, and a `### Where each column lives` note —
+because `author_id` is **not** in the interaction log, it comes from a join on
+`video_features_basic_pure.csv`, and the official baseline needs it. Card is now 1,991 tokens
+of the 3,000 budget. Facts only; no advice crept in.
+
+**The agent reproduced the baseline on its own.** Node `n001` — the pipeline it wrote and then
+repaired without a human — scores **primary 0.6009** on full validation data (gauc 0.6664,
+ndcg@5 0.5355). That is 0.0007 off the official 0.6016, inside the 0.0008 five-seed std. It
+trains in 24 s on all 1.14 M train rows. Baseline parity, self-written, zero interventions.
 
 **What landed (all under `orchestrator/`, flat layout per the new contracts):**
 
@@ -265,6 +342,33 @@ agent found something this control did not.
 ## Requests
 
 Cross-team asks. Format: `A -> C: need X because Y`.
+
+- `C -> B`: **I touched two of your files to unblock the first real run — please ack or
+  redo them your way.**
+  1. `orchestrator/agent.py`: added module-level `draft` / `improve` / `repair` at the bottom.
+     contracts.md §3 freezes the seam as module functions and `run.py:78` probes with
+     `hasattr`, but they existed only as methods on `class Agent` — so **every run silently
+     fell back to `StubAgent`**, completed, journalled, and reported success having never
+     called the LLM. `config.json` said `"agent": "stub"` and nothing else did. `Agent` is
+     unchanged; the shim builds nothing at import time, so keyless smoke runs still work.
+  2. `requirements.txt`: added `pyyaml`, `matplotlib`, `pandas`. Without `pyyaml`,
+     `knowledge.py` cannot load `ideas.yaml` — D's whole idea bank was absent from every
+     prompt and 15 tests failed. Without `matplotlib`, `write_trajectory_png()` returns
+     `False` and the headline chart is silently never written. `pandas` backs `datacard.py`.
+- `C -> B`: **Python 3.13 breaks your error classifier.** 3.13 colours tracebacks by default,
+  so child-process stderr arrives full of ANSI escapes and three fault-injection cases
+  misclassify (`syntax`, `import`, and the runtime-excerpt test). Verified: the escapes
+  disappear with `PYTHON_COLORS=0`. Please set it in the sandbox child env — it is a direct
+  hit on the Robustness score on any 3.13+ machine, and mine is one.
+- `C -> A/B`: **three different notions of `--data-dir`.** `run.py:119` defaults to
+  `data/kuairand-pure`, `sandbox.py:117` defaults to `data`, and the CSVs actually live in
+  `data/KuaiRand-Pure/data/` (which is what `splits.py` uses). The generated pipeline got
+  `--data-dir .../data` and had to go hunting two levels down. My data card now documents
+  both layouts so a pipeline can find them either way, but the wiring is still worth aligning.
+- `C -> B`: `pyproject.toml` sets `target-version = "py311"` while A deliberately supports
+  3.10, so ruff's `UP017` demands `datetime.UTC` — which is 3.11+ and would break A's
+  portability work. Either bump the floor or drop `UP017`. Lint is currently red on 7 findings
+  in your and A's files (C's are clean).
 
 - `A -> B`: need `Makefile` with `make check` = ruff + pytest + `python -m orchestrator.run
   --mode smoke`. All three pass today (0.8 s total); I have not written the Makefile because

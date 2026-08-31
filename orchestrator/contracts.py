@@ -38,29 +38,65 @@ EventKind = Literal[
 PRIMARY_PARTS: tuple[str, str] = ("gauc", "ndcg@5")
 
 
-def primary(metrics: dict[str, float]) -> float:
-    """Equal-weighted mean of GAUC and nDCG@5.
+def primary(metrics: dict[str, float], parts: tuple[str, ...] | None = None) -> float:
+    """The composite score, always oriented so that **higher is better**.
 
-    `evaluate.score()` (C) already returns `primary`; this is the fallback for
-    stubs and for journal rows written before C's evaluator was wired in.
+    `evaluate.score()` (C) already returns `primary` for every task, so this is mostly a
+    fallback for stubs and for journal rows written before the evaluator was wired in.
+    `parts` defaults to KuaiRand's pair; pass a task's own parts for anything else. A
+    lower-is-better member (RMSE, log loss) is negated, so the orchestrator's `>` never
+    has to know which direction a metric runs in.
     """
     if "primary" in metrics:
         return float(metrics["primary"])
-    return sum(float(metrics[k]) for k in PRIMARY_PARTS) / len(PRIMARY_PARTS)
+    parts = parts or PRIMARY_PARTS
+    try:
+        from orchestrator import metrics as _M
+
+        return _M.primary_of(metrics, parts)
+    except (ImportError, KeyError):
+        # Unknown metric names (stub fixtures) fall back to a plain mean.
+        return sum(float(metrics[k]) for k in parts) / len(parts)
 
 
 @dataclass(frozen=True)
 class TaskSpec:
+    """What the run is working on.
+
+    Everything after `conv_n` was added when the orchestrator stopped assuming KuaiRand.
+    All of it has a KuaiRand-shaped default, so a `TaskSpec` built the old way still
+    behaves exactly as it did, and `tasks/*.yaml` fills the rest in for any other problem.
+    """
+
     name: str  # "kuairand-pure"
     data_dir: Path
     metrics: tuple[str, ...]  # ("gauc", "ndcg@5")
     baseline_val: dict[str, float]  # {"gauc":0.6674,"ndcg@5":0.5357,"primary":0.6016}
     baseline_test: dict[str, float]  # {"gauc":0.6610,"ndcg@5":0.5282,"primary":0.5946}
-    ceiling: float = 0.8645
+    ceiling: float | None = 0.8645
     max_iters: int = 50
     wall_clock_s: int = 6 * 3600
     conv_eps: float = 0.002
     conv_n: int = 3
+
+    #: "ranking" | "binary" | "multiclass" | "regression"
+    kind: str = "ranking"
+    #: The problem statement, in the user's words. Goes into every prompt.
+    description: str = ""
+    #: Metrics whose (sign-corrected) mean is `primary`. Always maximised.
+    primary_parts: tuple[str, ...] = PRIMARY_PARTS
+    submission_columns: tuple[str, ...] = ("row_id", "user_id", "video_id", "score")
+    prediction_column: str = "score"
+    #: Run-to-run noise of a fixed pipeline. A gain smaller than this is not a gain.
+    seed_std: float | None = 0.0008
+    #: The parsed `tasks/<name>.yaml`, when the run was started from one.
+    config: object | None = None
+
+    def primary(self, metrics: dict[str, float]) -> float:
+        """This task's composite score, oriented so higher is always better."""
+        if "primary" in metrics:
+            return float(metrics["primary"])
+        return primary(metrics, self.primary_parts)
 
 
 @dataclass

@@ -18,6 +18,11 @@ KNOWN_VARS = {
     "run_id", "iteration", "budget", "ideas", "history", "draft_angle",
     "parent_code", "parent_metrics", "parent_node_id", "error_class",
     "error_excerpt", "stdout_tail", "attempt", "max_attempts", "previous_attempts",
+    # Task-derived, supplied by agent._task_values() to every prompt including system.md.
+    # These are what let one set of prompt files serve more than one dataset.
+    "dead_ends", "task_name", "task_kind", "task_description", "submission_header",
+    "prediction_column", "group_column", "subsample_note", "order_note",
+    "metric_names", "primary_expr",
 }
 
 
@@ -207,19 +212,44 @@ def test_system_prompt_states_the_disqualifying_rules():
 
 def test_system_prompt_carries_every_dead_end():
     """The dead ends are static, so they ride in the cached system block rather than
-    being re-sent each call. That only works if system.md actually states them - this
-    is the guard against ideas.yaml and system.md drifting apart.
+    being re-sent each call.
+
+    They used to be typed into `system.md` by hand, and this test compared the two files.
+    They are now injected from the *task's own* bank, because a second task must not
+    inherit KuaiRand's measured conclusions. So the assertion moved to the rendered
+    prompt: whatever the bank says must reach the model.
     """
-    text = (PROMPTS / "system.md").read_text(encoding="utf-8").lower()
+    from string import Template
+
     ends = knowledge.dead_ends()
     assert len(ends) >= 4
-    # each dead end must be recognisable in the prompt by its distinguishing number/idea
-    assert "0.5940" in text and "0.5950" in text       # more static features
-    assert "0.5895" in text or "0.5902" in text        # more capacity
-    assert "within-user" in text                       # user-side first-order terms
-    assert "exactly zero" in text
-    assert "0.5982" in text and "0.6032" in text       # uniform vs weighted pair sampling
-    assert "positive count" in text
+
+    raw = (PROMPTS / "system.md").read_text(encoding="utf-8")
+    assert "$dead_ends" in raw, "system.md no longer injects the bank's dead ends"
+
+    rendered = Template(raw).safe_substitute(
+        {"dead_ends": "\n\n".join(f"- **{d.claim}** {d.verdict}" for d in ends)}
+    ).lower()
+
+    # each dead end must be recognisable by its distinguishing number/idea
+    assert "0.5940" in rendered and "0.5950" in rendered   # more static features
+    assert "0.5895" in rendered or "0.5902" in rendered    # more capacity
+    assert "within-user" in rendered                       # user-side first-order terms
+    assert "0.5982" in rendered and "0.6032" in rendered   # uniform vs weighted sampling
+    assert "positive count" in rendered
+
+
+def test_a_task_never_inherits_another_tasks_dead_ends():
+    """The failure this guards against is silent and expensive: a regression task told,
+    with authority, that a larger embedding dimension does not help."""
+    from orchestrator.taskspec import load_task
+
+    generic = load_task("demo-regression")
+    assert generic.ideas_path is not None
+    assert knowledge.dead_ends(str(generic.ideas_path)) == []
+
+    kuairand = load_task("kuairand-pure")
+    assert len(knowledge.dead_ends(str(kuairand.ideas_path))) >= 4
 
 
 def test_improve_prompt_demands_one_change_and_warns_about_noise():

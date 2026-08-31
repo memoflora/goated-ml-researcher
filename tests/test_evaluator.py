@@ -43,7 +43,7 @@ def write_csv(path: Path, rows: list[list], header: list[str] | None = None) -> 
 def good_rows(split: Split) -> list[list]:
     return [
         [i, int(u), int(v), f"{0.5 - 0.1 * i:.4f}"]
-        for i, (u, v) in enumerate(zip(split.user_ids, split.video_ids))
+        for i, (u, v) in enumerate(zip(split.user_ids, split.video_ids, strict=False))
     ]
 
 
@@ -159,7 +159,9 @@ def test_validate_reports_missing_file():
 @needs_data
 def test_hidden_test_scoring_is_refused(tmp_path, monkeypatch):
     monkeypatch.delenv(ev.TEST_SCORING_ENV, raising=False)
-    with pytest.raises(ev.SubmissionError, match="refusing to score the hidden test"):
+    # "held-out" rather than "hidden": the guard now covers any task, and only KuaiRand's
+    # test split is hidden by an organiser. The refusal itself is unchanged.
+    with pytest.raises(ev.SubmissionError, match="refusing to score the held-out test"):
         ev.score(tmp_path / "anything.csv", "test")
 
 
@@ -183,7 +185,7 @@ def test_item_popularity_rung_reproduces():
 
     tr, va = get_split("train"), get_split("valid")
     pos, imp = collections.Counter(), collections.Counter()
-    for v, y in zip(tr.video_ids.tolist(), tr.labels.tolist()):
+    for v, y in zip(tr.video_ids.tolist(), tr.labels.tolist(), strict=False):
         imp[v] += 1
         pos[v] += y
     gmean = sum(pos.values()) / sum(imp.values())

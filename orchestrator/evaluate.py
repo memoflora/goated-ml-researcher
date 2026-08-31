@@ -123,45 +123,161 @@ def _read_scores(submission: Path, split_obj: Split) -> np.ndarray:
     return scores
 
 
-def validate(submission: Path | str, split: str) -> tuple[bool, str]:
+def _is_starter_kit(task) -> bool:
+    """KuaiRand keeps its own path: the organisers' loader and the organisers' metrics."""
+    return task is None or getattr(task.data, "loader", "") == "starter_kit"
+
+
+def _resolve(task):
+    """Accept a TaskConfig, a task name, or None (meaning KuaiRand-Pure)."""
+    if task is None or not isinstance(task, str):
+        return task
+    from orchestrator.taskspec import load_task
+
+    return load_task(task)
+
+
+def _read_predictions(submission: Path, task, arrays) -> np.ndarray:
+    """Generic counterpart of `_read_scores`, driven by the task's submission schema.
+
+    Same checks in the same order — header, field count, row_id contiguity, id alignment,
+    finite numbers — so an agent that fixes one task's contract error has learned how to
+    fix every task's.
+    """
+    header = list(task.submission_columns)
+    pred_at = header.index(task.prediction_column)
+    id_cols = [(i, c) for i, c in enumerate(header) if c in arrays.ids]
+    n_expected = len(arrays)
+
+    with open(submission, newline="", encoding="utf-8") as fh:
+        reader = csv.reader(fh)
+        head = next(reader, None)
+        if head != header:
+            raise SubmissionError(f"header must be {','.join(header)}, got {head}")
+
+        preds = np.empty(n_expected, dtype=np.float64)
+        n = 0
+        for ln, rec in enumerate(reader, start=2):
+            if len(rec) != len(header):
+                raise SubmissionError(
+                    f"line {ln} has {len(rec)} fields, expected {len(header)}"
+                )
+            if n >= n_expected:
+                raise SubmissionError(
+                    f"line {ln}: more rows than the {arrays.name} split ({n_expected} rows)"
+                )
+            try:
+                rid = int(rec[0])
+            except ValueError:
+                raise SubmissionError(
+                    f"line {ln}: row_id {rec[0]!r} is not an integer"
+                ) from None
+            if rid != n:
+                raise SubmissionError(
+                    f"line {ln}: row_id={rid}, expected {n} (must increase from 0 with no gaps)"
+                )
+            for i, col in id_cols:
+                want = arrays.ids[col][n]
+                if str(rec[i]) != str(want):
+                    raise SubmissionError(
+                        f"line {ln} misaligned: {col}={rec[i]!r}, "
+                        f"{arrays.name} row {n} has {want!r}"
+                    )
+            try:
+                v = float(rec[pred_at])
+            except ValueError:
+                raise SubmissionError(
+                    f"line {ln}: {task.prediction_column} {rec[pred_at]!r} is not a number"
+                ) from None
+            if math.isnan(v) or math.isinf(v):
+                raise SubmissionError(
+                    f"line {ln}: {task.prediction_column} is NaN/Inf, which is not allowed"
+                )
+            preds[n] = v
+            n += 1
+
+    if n != n_expected:
+        raise SubmissionError(
+            f"submission has {n} rows, {arrays.name} split has {n_expected}"
+        )
+    return preds
+
+
+def validate(submission: Path | str, split: str, task=None) -> tuple[bool, str]:
     """Check format and alignment. Returns `(ok, message)`; never raises on a bad file.
 
     Rejects: wrong header, wrong field count, row_id gaps or non-integers, row-count
-    mismatch in either direction, user/video misalignment, non-numeric or NaN/Inf scores.
+    mismatch in either direction, id misalignment, non-numeric or NaN/Inf predictions.
     """
     submission = Path(submission)
-    try:
-        split_obj = get_split(split)
-    except (ValueError, FileNotFoundError) as exc:
-        return False, str(exc)
+    task = _resolve(task)
     if not submission.is_file():
         return False, f"submission not found: {submission}"
+
+    if _is_starter_kit(task):
+        try:
+            split_obj = get_split(split)
+        except (ValueError, FileNotFoundError) as exc:
+            return False, str(exc)
+        try:
+            _read_scores(submission, split_obj)
+        except SubmissionError as exc:
+            return False, str(exc)
+        except OSError as exc:
+            return False, f"could not read submission: {exc}"
+        return True, f"ok: {len(split_obj):,d} rows, split={split_obj.name}"
+
+    from orchestrator import datasource as ds
+
     try:
-        _read_scores(submission, split_obj)
+        arrays = ds.eval_arrays(task, split)
+    except (ValueError, KeyError, FileNotFoundError) as exc:
+        return False, str(exc)
+    try:
+        _read_predictions(submission, task, arrays)
     except SubmissionError as exc:
         return False, str(exc)
     except OSError as exc:
         return False, f"could not read submission: {exc}"
-    return True, f"ok: {len(split_obj):,d} rows, split={split_obj.name}"
+    return True, f"ok: {len(arrays):,d} rows, split={arrays.name}"
 
 
-def score(submission: Path | str, split: str) -> dict[str, float]:
-    """Validate then score a submission. Returns `{'gauc','ndcg@5','primary'}`.
+def score(submission: Path | str, split: str, task=None) -> dict[str, float]:
+    """Validate then score a submission, returning every metric the task reports plus
+    `primary` (always oriented so that higher is better).
 
     Raises `SubmissionError` if the file is malformed — the orchestrator treats that as
     `error_class="contract"` and sends the node to the repair loop.
     """
     submission = Path(submission)
+    task = _resolve(task)
     name = normalise_split(split)
     if name == "test" and os.environ.get(TEST_SCORING_ENV) != "1":
         raise SubmissionError(
-            "refusing to score the hidden test split during development. "
+            "refusing to score the held-out test split during development. "
             "Development uses train + validation only; scoring test here would corrupt "
             f"our stopping signal. Set {TEST_SCORING_ENV}=1 only for a post-hoc audit."
         )
-    split_obj = get_split(name)
-    scores = _read_scores(submission, split_obj)
-    return score_arrays(split_obj.user_ids, split_obj.labels, scores)
+
+    if _is_starter_kit(task):
+        split_obj = get_split(name)
+        scores = _read_scores(submission, split_obj)
+        return score_arrays(split_obj.user_ids, split_obj.labels, scores)
+
+    from orchestrator import datasource as ds
+    from orchestrator import metrics as M
+
+    arrays = ds.eval_arrays(task, name)
+    preds = _read_predictions(submission, task, arrays)
+    if not np.isfinite(arrays.target).all():
+        raise SubmissionError(
+            f"the {name} split has no usable labels, so it cannot be scored here"
+        )
+    out: dict[str, float] = {}
+    for metric_name in task.all_metrics:
+        out[metric_name] = M.compute(metric_name, arrays.target, preds, arrays.groups)
+    out["primary"] = M.primary_of(out, task.primary_parts)
+    return out
 
 
 def score_arrays(
@@ -180,6 +296,15 @@ def score_arrays(
     }
 
 
-def delta_vs_baseline(metrics: dict[str, float], baseline: dict[str, float]) -> dict[str, float]:
-    """Absolute per-metric improvement over a baseline — the journal's `delta_vs_baseline`."""
-    return {k: float(metrics[k] - baseline[k]) for k in METRIC_KEYS if k in metrics}
+def delta_vs_baseline(
+    metrics: dict[str, float], baseline: dict[str, float], keys: tuple[str, ...] | None = None
+) -> dict[str, float]:
+    """Absolute per-metric improvement over a baseline — the journal's `delta_vs_baseline`.
+
+    Signed as the raw difference, so for a lower-is-better metric a *negative* delta is an
+    improvement. `primary` is always oriented the other way, which is why the report shows
+    both rather than trying to collapse them.
+    """
+    if keys is None:
+        keys = tuple(k for k in metrics if k in baseline) or METRIC_KEYS
+    return {k: float(metrics[k] - baseline[k]) for k in keys if k in metrics and k in baseline}

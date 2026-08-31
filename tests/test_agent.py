@@ -12,7 +12,14 @@ import pytest
 from orchestrator import agent as agent_mod
 from orchestrator.agent import Agent, AgentError, StubClient, Usage
 from orchestrator.contracts import (
-    PIPELINE_CLI, Budget, Context, ExecResult, HistoryEntry, Idea, Node, TaskSpec,
+    PIPELINE_CLI,
+    Budget,
+    Context,
+    ExecResult,
+    HistoryEntry,
+    Idea,
+    Node,
+    TaskSpec,
 )
 
 _needs_openai = pytest.mark.skipif(
@@ -163,11 +170,15 @@ class TestPromptAssembly:
             "only the parent's code may appear, never history code"
 
     def test_failed_history_entries_report_their_error_class(self, ctx):
+        # Asserted against `improve`, not `draft`: D's draft.md is a cold start and
+        # deliberately renders no $history, so this used to pass only against the
+        # placeholder prompt and started failing the moment the real one landed.
         ctx.history = [HistoryEntry(iteration=1, node_id="n000", kind="draft", hypothesis="try FM",
                              primary=None, delta_vs_baseline=None,
                                     status="buggy", error_class="import")]
+        ctx.parent_code = "x = 1\n"
         a = Agent(FakeClient([]))
-        a.draft(ctx)
+        a.improve(ctx, node())
         assert "failed (import)" in a.client.calls[0]["messages"][0]["content"]
 
     def test_d_prompt_files_win_over_the_fallbacks(self, ctx, tmp_path):
@@ -370,8 +381,11 @@ class TestSafety:
             Agent(FakeClient([])).improve(ctx, node())
 
     def test_make_client_refuses_to_run_keyless(self, monkeypatch):
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("TECHJAM_LLM", raising=False)
+        # Every provider key has to go, not just Anthropic's: on a machine that happens to
+        # export OPENAI_API_KEY this passed for the wrong reason and then failed once the
+        # OpenAI adapter landed. The test is about having *no* key at all.
+        for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "TECHJAM_LLM"):
+            monkeypatch.delenv(var, raising=False)
         with pytest.raises(AgentError, match="ANTHROPIC_API_KEY"):
             agent_mod.make_client()
 

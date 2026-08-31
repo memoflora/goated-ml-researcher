@@ -31,3 +31,6 @@ venv/
 Thumbs.db
 .idea/
 .vscode/
+
+# Generated demo fixture — rebuild with `python tools/make_demo_data.py`
+data/demo-regression/

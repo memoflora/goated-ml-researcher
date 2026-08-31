@@ -33,10 +33,14 @@ Then work. The project is already planned; plan *your next task* only.
 
 ## The brief
 
-Build an autonomous ML research agent: an LLM-driven orchestrator that, given KuaiRand-Pure and
-a metric, writes its own pipeline code, trains, evaluates, reflects, revises, and repeats — up
-to 50 iterations or 6 hours, with as close to zero human intervention as possible. Ranking is on
-a hidden test set. We are scored on: score delta over the official baseline, robustness under
+Build an autonomous ML research agent: an LLM-driven orchestrator that, given a dataset, a
+problem statement and a metric, writes its own pipeline code, trains, evaluates, reflects,
+revises, and repeats — up to 50 iterations or 6 hours, with as close to zero human intervention
+as possible. Ranking is on a hidden test set.
+
+**The task is configuration.** A problem is a file in `tasks/<name>.yaml` naming the data,
+target, split, metrics and submission schema; the data card, evaluator, prompts and report all
+read their facts from there. KuaiRand-Pure is one such file — and still 100% of the score. We are scored on: score delta over the official baseline, robustness under
 failure, the quality of the ideas the agent chose to try, how few humans it needed, and how
 cheap the run was.
 
@@ -49,7 +53,7 @@ not 1.0 — 27% of users have no positive label.
 |---|---|---|---|
 | **A** | ML Engineer — Orchestrator & Run | `contracts.py` `core.py` `policy.py` `journal.py` `run.py` | Autonomy |
 | **B** | ML Engineer — Agent Runtime & Sandbox | `agent.py` `sandbox.py` `Makefile` `.github/` | Robustness + Feasibility |
-| **C** | ML Researcher — Data, Metrics & Evaluation | `evaluate.py` `datacard.py` `report.py` `data/` | Primary metric |
+| **C** | ML Researcher — Data, Metrics & Evaluation | `evaluate.py` `datacard.py` `report.py` `splits.py` `taskspec.py` `metrics.py` `datasource.py` `profile.py` `data/` `tasks/` | Primary metric |
 | **D** | ML Researcher — Method, Knowledge & Story | `ideas.yaml` `knowledge.py` `prompts/` `reference/` `docs/` | Innovation + Presentation |
 
 Ownership is **per file**, not per directory. B owns prompt plumbing; **D owns prompt text**.
@@ -90,3 +94,4 @@ Ownership is **per file**, not per directory. B owns prompt plumbing; **D owns p
   the organisers' ranked list of unexplored directions
 - `references/contracts.md` — architecture, module layout, frozen interfaces, journal schema
 - `references/roles.md` — all four roles: scope, build order, acceptance tests, traps
+- `tasks/kuairand-pure.yaml` — the scored task as configuration; copy it to add a new one

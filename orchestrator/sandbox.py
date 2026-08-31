@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import re
+
 try:
     import resource  # POSIX only; absent on Windows
 except ImportError:  # pragma: no cover - platform dependent
@@ -102,7 +103,8 @@ def run(node: Node, *, split: str, seed: int,
         data_dir: Path | None = None,
         mem_limit_mb: int = DEFAULT_MEM_LIMIT_MB,
         python: str | None = None,
-        allow_network: bool = False) -> ExecResult:
+        allow_network: bool = False,
+        header_columns: tuple[str, ...] | None = None) -> ExecResult:
     """Execute `node.workspace/pipeline.py` and return a classified ExecResult.
 
     Never raises for a misbehaving pipeline: every failure mode comes back as an
@@ -141,7 +143,7 @@ def run(node: Node, *, split: str, seed: int,
     stdout = _read_text(out_path)
     stderr = _read_text(err_path)
     return _build_result(ws, proc.returncode, stdout, stderr,
-                         kill_reason, wall_s, peak_rss_mb)
+                         kill_reason, wall_s, peak_rss_mb, header_columns)
 
 
 def classify(exit_code: int, stderr: str, stdout: str = "",
@@ -222,34 +224,49 @@ def parse_result_json(stdout: str) -> tuple[dict | None, str | None]:
     return payload, None
 
 
-def check_submission(path: Path, *, expected_rows: int | None = None
+def check_submission(path: Path, *, expected_rows: int | None = None,
+                     header_columns: tuple[str, ...] | None = None
                      ) -> tuple[ErrorClass | None, str | None]:
     """Cheap structural guard so a malformed CSV is caught before C's evaluator.
 
     This is not scoring and not `evaluate.validate()` — it only catches the shapes
     the fault-injection suite must recover from: no file, wrong header, NaN/Inf
     scores, and a row count that contradicts the pipeline's own RESULT_JSON.
+
+    `header_columns` comes from the task; it defaults to KuaiRand's so existing callers
+    and the fault fixtures are unaffected. Without it this guard would reject every
+    correct submission for every other task, as a `contract` error, three times, and then
+    kill the node.
     """
+    expected_header = ",".join(header_columns) if header_columns else SUBMISSION_HEADER
+    n_fields = len(header_columns) if header_columns else 4
+    # The prediction is the last column in every schema we accept; hardcoding index 3
+    # would IndexError on any task whose submission is narrower than KuaiRand's.
+    pred_at = n_fields - 1
+
     if not path.is_file():
         return "contract", "pipeline exited 0 but wrote no submission.csv"
     with open(path, newline="", encoding="utf-8-sig") as fh:
         header = fh.readline().strip()
-        if header != SUBMISSION_HEADER:
-            return "contract", f"submission header is {header!r}, expected {SUBMISSION_HEADER!r}"
+        if header != expected_header:
+            return "contract", f"submission header is {header!r}, expected {expected_header!r}"
         n_rows = 0
         for lineno, line in enumerate(fh, start=2):
             if not line.strip():
                 continue
             n_rows += 1
             parts = line.rstrip("\r\n").split(",")
-            if len(parts) != 4:
-                return "contract", f"submission line {lineno} has {len(parts)} fields, expected 4"
+            if len(parts) != n_fields:
+                return "contract", (
+                    f"submission line {lineno} has {len(parts)} fields, expected {n_fields}"
+                )
+            raw = parts[pred_at]
             try:
-                value = float(parts[3])
+                value = float(raw)
             except ValueError:
-                return "eval", f"submission line {lineno} has non-numeric score {parts[3]!r}"
+                return "eval", f"submission line {lineno} has non-numeric score {raw!r}"
             if value != value or value in (float("inf"), float("-inf")):
-                return "eval", f"submission line {lineno} has a NaN/Inf score ({parts[3]!r})"
+                return "eval", f"submission line {lineno} has a NaN/Inf score ({raw!r})"
     if n_rows == 0:
         return "contract", "submission.csv has a header but no rows"
     if expected_rows is not None and n_rows != expected_rows:
@@ -263,7 +280,8 @@ def check_submission(path: Path, *, expected_rows: int | None = None
 # --------------------------------------------------------------------------- #
 
 def _build_result(ws: Path, returncode: int, stdout: str, stderr: str,
-                  kill_reason: str | None, wall_s: float, peak_rss_mb: float) -> ExecResult:
+                  kill_reason: str | None, wall_s: float, peak_rss_mb: float,
+                  header_columns: tuple[str, ...] | None = None) -> ExecResult:
     submission = ws / "submission.csv"
     payload, payload_err = parse_result_json(stdout)
 
@@ -288,7 +306,8 @@ def _build_result(ws: Path, returncode: int, stdout: str, stderr: str,
     # exit 0 from here on: everything left is a contract or eval breach.
     if payload_err:
         return fail("contract", payload_err)
-    cls, why = check_submission(submission, expected_rows=_expected_rows(payload))
+    cls, why = check_submission(submission, expected_rows=_expected_rows(payload),
+                                header_columns=header_columns)
     if cls:
         return fail(cls, why or "malformed submission.csv")
 
@@ -426,6 +445,14 @@ def _child_env(ws: Path, seed: int, allow_network: bool) -> dict[str, str]:
     env["PYTHONHASHSEED"] = str(seed)               # reruns must reproduce
     env["MPLBACKEND"] = "Agg"
     env["TOKENIZERS_PARALLELISM"] = "false"
+    # Python 3.13 colourises tracebacks by default. The escape sequences land in the
+    # captured stderr, and every pattern the error classifier matches on ("File \"...\"",
+    # the exception name) is then split by an ANSI code — so a syntax error classifies as
+    # `unknown` and the repair prompt gets an excerpt full of \x1b[35m. Costs Robustness
+    # points on any 3.13+ machine, and it is invisible until you read the raw bytes.
+    env["PYTHON_COLORS"] = "0"
+    env["NO_COLOR"] = "1"
+    env["TERM"] = "dumb"
     env.pop("PYTHONSTARTUP", None)
     if not allow_network:
         # sitecustomize.py lives in the workspace; make sure it is importable and
