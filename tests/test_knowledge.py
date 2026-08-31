@@ -363,3 +363,29 @@ class TestLiveRunLessons:
         j = src.index("def _system_blocks")
         # _API_NOTES is consumed by _whitelist_block, which _system_blocks caches.
         assert "_whitelist_block" in src[:i] or "_whitelist_block" in src[i:j + 2000]
+
+
+class TestRowOrderRule:
+    """Row order through joins is the failure that survived three live runs.
+
+    It appeared as `row_id = -1` in run 2, and as both a gap and a misalignment in run 3
+    — always after the agent started merging dataframes. The skeleton demonstrates
+    correct row handling but never demonstrates a *merge*, which is precisely the
+    operation that breaks it.
+    """
+
+    def test_the_contract_explains_row_order_survival(self):
+        from pathlib import Path
+
+        text = Path("orchestrator/prompts/system.md").read_text(encoding="utf-8")
+        assert "Row order survives every join" in text
+        for marker in ("sort_values", 'how="left"', "assign `row_id` once".lower()):
+            assert marker.lower() in text.lower(), f"row-order guidance lost: {marker}"
+
+    def test_it_warns_that_row_id_is_positional_not_derived(self):
+        """The agent kept recomputing row_id from the data instead of carrying the
+        position it was assigned at load. That is the actual mental model to correct."""
+        from pathlib import Path
+
+        text = Path("orchestrator/prompts/system.md").read_text(encoding="utf-8")
+        assert "not a value you compute from" in text

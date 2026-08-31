@@ -24,6 +24,33 @@ python pipeline.py --data-dir DIR --out-dir DIR --split {val,test} --seed N [--s
 5. Exit 0 on success, non-zero on failure. Never prompt for input. Never touch the network.
 6. Honour `--subsample F` by $subsample_note
 
+### Row order survives every join, or the submission is rejected
+
+This is the single most common way a working model still scores nothing. `row_id` is the
+position of the row **in the evaluation split as loaded**, not a value you compute from
+the data. A merge reorders rows and can drop or duplicate them; a groupby returns its own
+order; a filter leaves gaps. Any of those and the submission no longer lines up, however
+good the model is.
+
+Assign `row_id` once, at load, before any transformation — then carry it through
+everything and restore it at the very end:
+
+```python
+ev = load_eval_split(...)              # the split, in its own order
+ev["row_id"] = range(len(ev))          # assign ONCE, before any join
+
+feat = ev.merge(side_table, on=key_col, how="left")  # may reorder; must never drop
+assert len(feat) == len(ev), "the join changed the row count"
+
+feat["score"] = model.predict(...)
+out = feat.sort_values("row_id")       # restore the split's order
+out[[*"$submission_header".split(",")]].to_csv(out_path, index=False)
+```
+
+Use `how="left"` so a missing lookup gives NaN rather than deleting the row, and check the
+row count after every join. If the count changed, the join is wrong — fixing the score
+afterwards cannot repair it.
+
 You never compute the metric yourself. The submission is scored outside your pipeline by
 the evaluation code that grades this task, so there is nothing to be gained by reimplementing it
 — and a subtly different implementation would make every decision you take afterwards
