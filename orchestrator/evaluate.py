@@ -17,6 +17,13 @@ failed check into `error_class="contract"` and routes it to the repair loop rath
 crashing the run. `tests/test_evaluator.py` asserts parity with `submit.py` on every
 rejection case.
 
+Every rejection message is written for that repair loop, not for a human reading a
+terminal: the LLM is handed the text and nothing else — never the file — so each message
+carries the diagnosis *and* the rule it broke. `submit.py` says "row_id=99, expected 3";
+we add what row_id means and which operation (a sort, a dedupe, a merge) produces that
+symptom. The KuaiRand path and the generic task path share one set of message builders so
+that an agent which learned to fix one task's contract error can fix any task's.
+
 Hidden-test guard
 -----------------
 KuaiRand-Pure ships the test labels, so `score(..., "test")` *would* work locally. Using
@@ -50,6 +57,84 @@ class SubmissionError(ValueError):
     """A submission that fails format or alignment checks."""
 
 
+# --------------------------------------------------------------------------- messages
+# Every rejection below is read by an LLM that has to repair the pipeline from the text
+# alone: it never sees the submission file. So each message says three things — what was
+# found, what was expected, and the shape of the fix. `tests/test_evaluator.py::
+# TestRepairableMessages` pins that third part, because it is the one an ordinary
+# "raise ValueError(...)" leaves out.
+
+
+def _header_message(head: list[str] | None, expected: list[str]) -> str:
+    want = ",".join(expected)
+    if head is None:
+        return (
+            f"submission is empty: the first line must be the header {want}, followed by "
+            "one row per evaluation-split row"
+        )
+    parts = [f"header must be {want}, got {','.join(head)}"]
+    if len(head) != len(expected):
+        parts.append(f"{len(head)} columns, expected {len(expected)}")
+    for i, (got_col, want_col) in enumerate(zip(head, expected, strict=False), start=1):
+        if got_col != want_col:
+            parts.append(f"column {i} is {got_col!r}, expected {want_col!r}")
+            break
+    missing = [c for c in expected if c not in head]
+    if missing:
+        parts.append("missing " + ", ".join(repr(c) for c in missing))
+    parts.append("write the header exactly, in this order, once, as the first line")
+    return "; ".join(parts)
+
+
+def _field_count_message(ln: int, got: int, expected: list[str]) -> str:
+    return (
+        f"line {ln} has {got} fields, expected {len(expected)} "
+        f"({','.join(expected)}) — an unquoted comma inside a value, a missing value, or a "
+        "stray trailing comma will do this"
+    )
+
+
+def _row_id_message(ln: int, rid: str | int, n: int, split_name: str) -> str:
+    return (
+        f"line {ln}: row_id={rid}, expected {n} (must increase from 0 with no gaps). "
+        f"row_id is the 0-based position of the row in the {split_name} split: start at 0 "
+        "and add exactly 1 per line. Never sort, shuffle, deduplicate or reindex the "
+        "evaluation rows before writing them"
+    )
+
+
+def _too_many_rows_message(ln: int, split_name: str, n_expected: int) -> str:
+    return (
+        f"line {ln}: more rows than the {split_name} split, which has exactly "
+        f"{n_expected:,d} rows. Write one row per evaluation-split row and stop — do not "
+        "append extra rows, and do not write the header twice"
+    )
+
+
+def _row_count_message(n: int, split_name: str, n_expected: int) -> str:
+    return (
+        f"submission has {n:,d} rows, {split_name} split has {n_expected:,d} "
+        f"({n_expected - n:,d} missing). Write exactly one row per evaluation-split row, "
+        "in the split's own order — a filtered, deduplicated or subsampled evaluation set "
+        "is the usual cause (--subsample must only shrink training data)"
+    )
+
+
+def _not_a_number_message(ln: int, column: str, raw: str) -> str:
+    return (
+        f"line {ln}: {column} {raw!r} is not a number — it must be a finite decimal "
+        "number, not a label, a blank, or a formatted string"
+    )
+
+
+def _non_finite_message(ln: int, column: str, raw: str) -> str:
+    return (
+        f"line {ln}: {column} is NaN/Inf, which is not allowed (value {raw!r}). Every "
+        "prediction must be finite — check for division by zero, log/exp overflow, an "
+        "unfilled default, or a NaN that propagated out of a join or a groupby"
+    )
+
+
 def _starter_kit_evaluate():
     """Import the vendored `evaluate.evaluate` without leaking a very generic module name."""
     sys.path.insert(0, str(STARTER_KIT))
@@ -72,54 +157,56 @@ def _read_scores(submission: Path, split_obj: Split) -> np.ndarray:
     users, videos = split_obj.user_ids, split_obj.video_ids
     n_expected = len(split_obj)
 
-    with open(submission, newline="") as fh:
+    with open(submission, newline="", encoding="utf-8") as fh:
         reader = csv.reader(fh)
         head = next(reader, None)
         if head != HEADER:
-            raise SubmissionError(f"header must be {','.join(HEADER)}, got {head}")
+            raise SubmissionError(_header_message(head, HEADER))
 
         scores = np.empty(n_expected, dtype=np.float64)
         n = 0
         for ln, rec in enumerate(reader, start=2):
             if len(rec) != 4:
-                raise SubmissionError(f"line {ln} has {len(rec)} fields, expected 4")
+                raise SubmissionError(_field_count_message(ln, len(rec), HEADER))
             rid, uid, vid, sc = rec
             if n >= n_expected:
                 raise SubmissionError(
-                    f"line {ln}: more rows than the {split_obj.name} split ({n_expected} rows)"
+                    _too_many_rows_message(ln, split_obj.name, n_expected)
                 )
             try:
                 rid_i = int(rid)
             except ValueError:
-                raise SubmissionError(f"line {ln}: row_id {rid!r} is not an integer") from None
-            if rid_i != n:
                 raise SubmissionError(
-                    f"line {ln}: row_id={rid}, expected {n} (must increase from 0 with no gaps)"
-                )
+                    f"line {ln}: row_id {rid!r} is not an integer — it must be the 0-based "
+                    f"position of the row in the {split_obj.name} split ({n} on this line)"
+                ) from None
+            if rid_i != n:
+                raise SubmissionError(_row_id_message(ln, rid, n, split_obj.name))
             try:
                 uid_i, vid_i = int(uid), int(vid)
             except ValueError:
                 raise SubmissionError(
-                    f"line {ln}: user_id/video_id {uid!r}/{vid!r} are not integers"
+                    f"line {ln}: user_id/video_id {uid!r}/{vid!r} are not integers — copy "
+                    f"them through from the {split_obj.name} rows unchanged"
                 ) from None
             if uid_i != users[n] or vid_i != videos[n]:
                 raise SubmissionError(
                     f"line {ln} misaligned: submission has ({uid},{vid}), "
-                    f"{split_obj.name} row {n} is ({users[n]},{videos[n]})"
+                    f"{split_obj.name} row {n} is ({users[n]},{videos[n]}). Emit the "
+                    "evaluation rows in the split's own order; (user_id, video_id) is not "
+                    "unique, so never merge or key on it"
                 )
             try:
                 v = float(sc)
             except ValueError:
-                raise SubmissionError(f"line {ln}: score {sc!r} is not a number") from None
+                raise SubmissionError(_not_a_number_message(ln, "score", sc)) from None
             if math.isnan(v) or math.isinf(v):
-                raise SubmissionError(f"line {ln}: score is NaN/Inf, which is not allowed")
+                raise SubmissionError(_non_finite_message(ln, "score", sc))
             scores[n] = v
             n += 1
 
     if n != n_expected:
-        raise SubmissionError(
-            f"submission has {n} rows, {split_obj.name} split has {n_expected}"
-        )
+        raise SubmissionError(_row_count_message(n, split_obj.name, n_expected))
     return scores
 
 
@@ -153,53 +240,49 @@ def _read_predictions(submission: Path, task, arrays) -> np.ndarray:
         reader = csv.reader(fh)
         head = next(reader, None)
         if head != header:
-            raise SubmissionError(f"header must be {','.join(header)}, got {head}")
+            raise SubmissionError(_header_message(head, header))
 
         preds = np.empty(n_expected, dtype=np.float64)
         n = 0
         for ln, rec in enumerate(reader, start=2):
             if len(rec) != len(header):
-                raise SubmissionError(
-                    f"line {ln} has {len(rec)} fields, expected {len(header)}"
-                )
+                raise SubmissionError(_field_count_message(ln, len(rec), header))
             if n >= n_expected:
-                raise SubmissionError(
-                    f"line {ln}: more rows than the {arrays.name} split ({n_expected} rows)"
-                )
+                raise SubmissionError(_too_many_rows_message(ln, arrays.name, n_expected))
             try:
                 rid = int(rec[0])
             except ValueError:
                 raise SubmissionError(
-                    f"line {ln}: row_id {rec[0]!r} is not an integer"
+                    f"line {ln}: row_id {rec[0]!r} is not an integer — it must be the "
+                    f"0-based position of the row in the {arrays.name} split "
+                    f"({n} on this line)"
                 ) from None
             if rid != n:
-                raise SubmissionError(
-                    f"line {ln}: row_id={rid}, expected {n} (must increase from 0 with no gaps)"
-                )
+                raise SubmissionError(_row_id_message(ln, rid, n, arrays.name))
             for i, col in id_cols:
                 want = arrays.ids[col][n]
                 if str(rec[i]) != str(want):
                     raise SubmissionError(
                         f"line {ln} misaligned: {col}={rec[i]!r}, "
-                        f"{arrays.name} row {n} has {want!r}"
+                        f"{arrays.name} row {n} has {want!r}. Emit the evaluation rows in "
+                        "the split's own order; the id columns are copied through for "
+                        "checking, not used as a key"
                     )
             try:
                 v = float(rec[pred_at])
             except ValueError:
                 raise SubmissionError(
-                    f"line {ln}: {task.prediction_column} {rec[pred_at]!r} is not a number"
+                    _not_a_number_message(ln, task.prediction_column, rec[pred_at])
                 ) from None
             if math.isnan(v) or math.isinf(v):
                 raise SubmissionError(
-                    f"line {ln}: {task.prediction_column} is NaN/Inf, which is not allowed"
+                    _non_finite_message(ln, task.prediction_column, rec[pred_at])
                 )
             preds[n] = v
             n += 1
 
     if n != n_expected:
-        raise SubmissionError(
-            f"submission has {n} rows, {arrays.name} split has {n_expected}"
-        )
+        raise SubmissionError(_row_count_message(n, arrays.name, n_expected))
     return preds
 
 
@@ -212,7 +295,10 @@ def validate(submission: Path | str, split: str, task=None) -> tuple[bool, str]:
     submission = Path(submission)
     task = _resolve(task)
     if not submission.is_file():
-        return False, f"submission not found: {submission}"
+        return False, (
+            f"submission not found: {submission} — the pipeline must write "
+            "submission.csv into the directory given by --out-dir before it exits 0"
+        )
 
     if _is_starter_kit(task):
         try:

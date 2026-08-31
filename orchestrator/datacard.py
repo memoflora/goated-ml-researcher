@@ -50,7 +50,7 @@ def compute_stats(data_dir: Path | str | None = None, *, refresh: bool = False) 
     fp = _data_fingerprint(data_dir)
     cache_path = CACHE_DIR / f"datacard-{fp}.json"
     if cache_path.exists() and not refresh:
-        return json.loads(cache_path.read_text())
+        return json.loads(cache_path.read_text(encoding="utf-8"))
 
     import pandas as pd  # tooling-only dependency; never imported by a generated pipeline
 
@@ -146,7 +146,9 @@ def compute_stats(data_dir: Path | str | None = None, *, refresh: bool = False) 
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = cache_path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(stats, indent=1))
+    # Explicit utf-8: the default on Windows is cp1252, which has already silently
+    # mangled two non-ASCII round-trips in this repo. Never rely on the platform default.
+    tmp.write_text(json.dumps(stats, indent=1), encoding="utf-8")
     os.replace(tmp, cache_path)
     return stats
 
