@@ -3,7 +3,7 @@
 Owner: D. `orchestrator/run.py` imports this module and calls `retrieve` on it, so the
 public surface is module-level functions, not a class.
 
-Retrieval is deliberately rule-based rather than semantic. With 32 curated ideas and one
+Retrieval is deliberately rule-based rather than semantic. With 33 curated ideas and one
 call per iteration, embeddings would add a dependency, a failure mode and a token cost to
 solve a problem we do not have. The rules are:
 
@@ -23,7 +23,7 @@ whole run. Evidence beats bookkeeping.
 
 Tier order encodes the organisers' own ranked list of untested directions, which inverts
 the obvious instinct: ranking losses first, architecture swaps last. See
-`references/starter-kit-findings.md`.
+`.claude/skills/techjam-track2/references/starter-kit-findings.md`.
 """
 
 from __future__ import annotations

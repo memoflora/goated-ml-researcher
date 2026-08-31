@@ -1,8 +1,11 @@
 # Idea bank — what the agent draws hypotheses from.
 #
-# Tiering follows the organisers' own ranked list of untested directions
-# (see references/starter-kit-findings.md), NOT the usual instinct to reach for a
-# bigger model. Measured facts that set this ordering:
+# Loaded by orchestrator/knowledge.py. Only the `dead_ends` and `ideas` keys are read;
+# `meta` is documentation for humans.
+#
+# Tiering follows the organisers' own ranked list of untested directions (see
+# .claude/skills/techjam-track2/references/starter-kit-findings.md), NOT the usual instinct
+# to reach for a bigger model. Measured facts that set this ordering:
 #
 #   * More static features gains nothing:  0.5940 vs the 5-field 0.5950.
 #   * More capacity gains nothing:         k = 8/16/32 -> 0.5895 / 0.5902 / 0.5887.
@@ -12,8 +15,10 @@
 #   => The bottleneck is neither features nor capacity. It is that the objective
 #      (pointwise logloss) does not match the metric (GAUC / nDCG, both ranking).
 #
-# Tiers, lowest first. `retrieve()` prefers the lowest tier with untried entries and
-# escalates when a tier stops producing gains.
+# Tiers, lowest first. `retrieve()` serves the lowest tier that still has untried entries,
+# in the curated order below, plus one lookahead from the next tier so escalation arrives as
+# a gradient rather than a cliff. It does not read scores: forcing exploration when a tier
+# stops producing gains is the search policy's job, not the bank's.
 #
 #   T0  baseline parity and hygiene      cheap, must-do, small payoff
 #   T1  objective alignment              organisers' #1 pick. Highest expected payoff.
@@ -27,7 +32,8 @@
 meta:
   baseline_val_primary: 0.6016
   baseline_test_primary: 0.5946
-  ceiling_primary: 0.8645
+  oracle_val_primary: 0.8484      # a PERFECT validation ranking. Headroom is 0.2468, not 0.4
+  oracle_test_primary: 0.8645     # a PERFECT hidden-test ranking. Never read progress vs 1.0
   seed_std: 0.0008
   source: starter-kit README + baseline_scores.json
 
@@ -87,10 +93,11 @@ ideas:
     tier: 0
     title: Early-stop on validation primary, not on training loss
     summary: >-
-      Select the epoch by validation primary (mean of GAUC and nDCG@5), not by logloss.
-      Logloss and the ranking metric diverge: in the reference run loss keeps falling
-      through epoch 11 while primary peaks at epoch 7. Keep the best-epoch weights rather
-      than the last.
+      Select the epoch by validation primary (mean of GAUC and nDCG@5), not by training
+      logloss. The two diverge, and the official baseline itself is early-stopped on primary
+      with patience 4: our reproduction stopped at epoch 11, so validation primary last
+      improved at epoch 7 and four further epochs of training bought nothing. Keep the
+      best-epoch weights rather than the last ones.
     citation: null
     est_minutes: 5
     prerequisites: [T0.reproduce-fm]
