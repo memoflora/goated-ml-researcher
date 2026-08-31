@@ -23,34 +23,43 @@ the code (`ALLOW_TEST_SCORING`), not in a promise.
 | **Official FM baseline** | **0.6016** | — |
 | Our reproduction of it | 0.6015 | −0.0001 |
 | BPR-FM control (hand-written) | 0.6032 | +0.0016 |
-| **Best autonomous run** — gpt-4o | **0.6189** | **+0.0173** |
+| ~~Best autonomous run~~ | ~~0.6189~~ | **withdrawn — label leakage** |
 | Oracle ceiling (a *perfect* ranking) | 0.8484 | +0.247 |
 
-**The agent beat the baseline by +0.0173** — ~10× our hand-written control, ~7% of the
-headroom above baseline — converging in 12 iterations for 124k tokens and 8.5 minutes. It
-chose and wrote a LambdaRank pairwise model itself:
+> ⚠️ **Two of our headline numbers were label leakage and have been withdrawn.** A run
+> reported primary 0.8484 with GAUC 0.99999 — exactly the oracle ceiling — because its
+> pipeline read the outcome of the impression it was predicting. An earlier 0.6189 had the
+> same flaw in a milder form. Re-run against the fixed harness, the 0.8484 pipeline scores
+> **0.4794, below random**. Full account: [`docs/handover/03-findings.md`](docs/handover/03-findings.md).
+
+The agent's *reasoning* was sound and is still quotable — it identified the pointwise/ranking
+objective mismatch, the organisers' own top-ranked untested direction:
 
 > *"The current model uses pointwise loss, which doesn't align well with ranking metrics like
 > GAUC and nDCG@5. By switching to a pairwise loss function and weighting the pairs by the
 > change in nDCG@5 they cause…"* — `n011`, run `r20260831-0532`
 
-That is the organisers' own top-ranked untested direction, reached by the agent.
+But the score that reasoning produced was contaminated. **We have not yet demonstrated a
+legitimate score above the baseline**; the first run on the leak-proof harness is in progress.
 
 **Read progress against 0.8484, not 1.0.** 27.1% of test users have no positive label, so
-their nDCG is 0 for any model; a perfect ranking scores 0.8645 on test, 0.8484 on validation.
+their nDCG is 0 for any model.
 
 ### What is not yet true
 
-- **That run produced no submittable artifact.** It failed at finalisation on its
-  `--split test` branch — a path no development iteration executes. Fixed since.
-- **Our only complete run scored 0.4839**, below random. The cause was ours: a test-path
-  check that disqualified any node whose test branch failed, which selected for triviality.
-  It now records the fault and repairs it at finalisation instead of vetoing.
-- **0.6189 is one run** at draft temperature 1.0; a second dev run at identical settings
-  scored nothing. Variance is unmeasured.
+- **No legitimate score above the baseline yet.** Every number that beat 0.6016 turned out to
+  be leakage. The first run on the leak-proof harness is in progress.
+- **Two failure modes are fixed but unproven together.** One run scored well and could not
+  finalise (its `--split test` branch had never executed); another finalised and scored below
+  random (our own test-path check selected for triviality). Both are fixed; no single run has
+  yet produced a good score *and* a submission.
+- **Variance is unmeasured.** Draft temperature is 1.0, and a dev run at identical settings to
+  a scoring one produced nothing at all.
 - Validation is not hidden test — the baseline itself drops 0.0070 between them.
 
-A model that clears the bar, and a submission pipeline that has not yet carried one across.
+What is solid: the harness reproduces the benchmark ladder exactly, runs unattended with zero
+manual interventions, recovers from every injected fault class, and now catches its own agent
+cheating. Full provenance in [`docs/handover/`](docs/handover/).
 
 ### Five things measured before the agent ever ran
 
@@ -214,6 +223,7 @@ instructs** — no hyperparameters, no "try gradient boosting". What to try is t
 | [docs/devpost.md](docs/devpost.md) | The submission writeup |
 | [STATUS.md](STATUS.md) | Run history and what each one taught |
 | [PLAN.md](PLAN.md) | Roles and the 72-hour schedule |
+| **[docs/handover/](docs/handover/)** | **Results with provenance, findings, run history, deliverables. Read before quoting any number.** |
 | [reference/README.md](reference/README.md) | The BPR-FM calibration experiment |
 | [`.claude/skills/techjam-track2/`](.claude/skills/techjam-track2) | Problem digest, frozen contracts, starter-kit findings, per-role briefs |
 

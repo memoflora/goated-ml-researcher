@@ -20,6 +20,22 @@ what you must not touch, and the interfaces you must honour.**
 
 No role given? Ask which one. Never guess.
 
+## Before you report any number
+
+**`docs/handover/` is the source of truth for results.** Two of our headline numbers turned
+out to be label leakage and were withdrawn; `docs/handover/01-results.md` marks which figures
+survived the audit. Never quote a score from this project without checking there first —
+0.6189 and 0.8484 are both invalid and must not appear in the writeup.
+
+| | |
+|---|---|
+| `docs/handover/README.md` | start here; the one-paragraph version and what to lead with |
+| `docs/handover/01-results.md` | every number, its provenance, and whether it is trustworthy |
+| `docs/handover/02-what-we-built.md` | the system and the design decisions |
+| `docs/handover/03-findings.md` | what we discovered, ordered by what matters |
+| `docs/handover/04-run-history.md` | every live run and what it taught |
+| `docs/handover/05-deliverables.md` | the organisers' required deliverables, mapped |
+
 **On invocation, read in this order:**
 
 1. `references/problem.md` — what we are scored on. Non-negotiable.
@@ -27,7 +43,9 @@ No role given? Ask which one. Never guess.
    where the headroom is. **Read before writing any idea, prompt, or pipeline.**
 3. `references/contracts.md` — architecture and the frozen interfaces.
 4. `references/roles.md` — find **your section**; skim the other three so you know the seams.
-5. `STATUS.md` and `PLAN.md` at repo root — what has landed, and which checkpoint is next.
+5. `docs/handover/` — the results, the findings, and the run history. Read this before
+   writing anything that quotes a number.
+6. `STATUS.md` and `PLAN.md` at repo root — what has landed, and which checkpoint is next.
 
 Then work. The project is already planned; plan *your next task* only.
 
@@ -73,8 +91,11 @@ Ownership is **per file**, not per directory. B owns prompt plumbing; **D owns p
 6. **Log every human touch** in `runs/<id>/interventions.md` during official runs. The count is
    directly scored. Treat a manual fix as a bug in the agent, and fix the agent instead.
 7. **Token discipline.** LLM spend is scored. No fan-out, no full history, no 200k prompts.
-8. **Train + validation only.** The test labels are on disk and nothing stops you reading them —
-   see `starter-kit-findings.md`. We enforce this rule ourselves; the environment does not.
+8. **Train + validation only.** The environment now enforces this rather than asking: on any
+   split the pipeline may not see, `masking.py` removes the label *and every other outcome of
+   the impression* — `is_click`, `play_time_ms`, the likes. That exists because the agent
+   leaked twice and scored the oracle ceiling; a prompt-level rule did not stop it. See
+   `docs/handover/03-findings.md` §1.
 9. **No external training data.** KuaiRand only. This is the one disqualifying rule.
 10. **Small commits, push often, rebase on `main`.** Branch: `feat/<letter>-<topic>`.
 
