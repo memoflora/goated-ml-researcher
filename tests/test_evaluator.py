@@ -529,3 +529,55 @@ def test_fm_fixture_encoder_matches_the_starter_kit_encoder():
     assert np.array_equal(enc_got["__fit__"][0], enc_ref["train"][0])
     assert np.array_equal(enc_got["__fit__"][1], enc_ref["train"][1])
     assert np.array_equal(enc_got["valid"][0], enc_ref["valid"][0])
+
+
+class TestPipelineWhitelistIsHonest:
+    """The whitelist is a promise to the agent, and the sandbox runs pipelines on this
+    same interpreter. A library listed but not importable is the worst kind of entry:
+    the agent is invited to use it, writes a pipeline around it, and the run burns an
+    iteration on a guaranteed ModuleNotFoundError. It happened on the first live run —
+    the model reached for `torch`, which was listed and absent.
+    """
+
+    @staticmethod
+    def _entries():
+        import re
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parent.parent / "requirements-pipeline.txt"
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"^([A-Za-z0-9_.\-]+)==([^\s#]+)", raw.strip())
+            if m:
+                yield m.group(1), m.group(2)
+
+    def test_every_listed_library_is_importable(self):
+        import importlib.util
+
+        aliases = {"scikit-learn": "sklearn", "pyyaml": "yaml"}
+        missing = [
+            name
+            for name, _ in self._entries()
+            if importlib.util.find_spec(aliases.get(name, name.replace("-", "_"))) is None
+        ]
+        assert not missing, (
+            f"requirements-pipeline.txt offers {missing} to the agent, but they cannot "
+            f"be imported by the interpreter the sandbox runs pipelines with. Either "
+            f"install them or remove them from the whitelist — a whitelist that lies "
+            f"costs an iteration every time the agent believes it."
+        )
+
+    def test_pins_match_what_is_installed(self):
+        import importlib.metadata as md
+
+        drift = []
+        for name, pinned in self._entries():
+            try:
+                actual = md.version(name)
+            except md.PackageNotFoundError:
+                continue  # covered by the test above
+            if actual != pinned:
+                drift.append(f"{name}: pinned {pinned}, installed {actual}")
+        assert not drift, (
+            "the whitelist pins versions the environment does not have: "
+            + "; ".join(drift)
+        )

@@ -11,18 +11,18 @@
 # pipeline must never import from `orchestrator/` — it is a standalone file by contract.
 
 # --- core numerics: the official baseline needs only numpy ---
-numpy==2.3.5
-scipy==1.16.3           # sparse matrices for wide linear / FM-style models
+numpy==2.4.1
+scipy==1.17.0           # sparse matrices for wide linear / FM-style models
 
 # --- tabular feature engineering ---
 pandas==2.3.3
 
 # --- classical models ---
-scikit-learn==1.7.2     # out-of-fold splitters, encoders, linear models, calibration
+scikit-learn==1.8.0     # out-of-fold splitters, encoders, linear models, calibration
 lightgbm==4.7.0         # GBDT on engineered features; also `lambdarank` for listwise ranking
 
 # --- neural / ranking losses ---
 # CPU only. GPU and distributed training are explicit non-goals (contracts.md), but torch is
 # what makes the two highest-headroom directions the organisers flagged tractable in one
 # iteration: pairwise/listwise ranking losses, and user-behaviour-sequence models.
-torch==2.9.0
+torch==2.13.0
