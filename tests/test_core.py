@@ -710,3 +710,42 @@ def test_the_pop_fixture_is_wired_to_the_loop_correctly(tmp_path):
 
     ok, msg = validate(sub, "val", load_task("kuairand-pure"))
     assert ok, f"submission rejected: {msg}"
+
+
+@_needs_dataset
+def test_the_skeleton_we_hand_the_agent_actually_runs(tmp_path):
+    """We tell the agent this pipeline works. That has to be true.
+
+    A skeleton that does not run would be worse than none: it teaches the contract
+    wrongly and every draft inherits the mistake. So the promise is executed, not
+    asserted — sandbox, validator, real data.
+    """
+    from orchestrator import sandbox as sandbox_mod
+    from orchestrator.contracts import Node
+    from orchestrator.evaluate import validate
+    from orchestrator.taskspec import load_task
+
+    src = (_REPO / "orchestrator" / "prompts" / "skeleton.py").read_text(encoding="utf-8")
+    src = src.replace("__SUBMISSION_HEADER__", "row_id,user_id,video_id,score")
+
+    ws = tmp_path / "n000"
+    ws.mkdir(parents=True)
+    (ws / "pipeline.py").write_text(src, encoding="utf-8")
+    node = Node(id="n000", parent_id=None, kind="draft", iteration=0, workspace=ws)
+
+    res = sandbox_mod.run(node, split="val", seed=0, timeout_s=600, data_dir=_KUAIRAND)
+    assert res.ok, f"the skeleton failed to run: {(res.stderr_tail or '')[-500:]}"
+    sub = res.artifacts.get("submission")
+    assert sub is not None, "the skeleton produced no submission"
+
+    ok, msg = validate(sub, "val", load_task("kuairand-pure"))
+    assert ok, f"the skeleton's submission does not validate: {msg}"
+
+
+def test_the_skeleton_declares_every_flag_the_orchestrator_passes():
+    """The first failure of live run 2: the model wrote an argparse without
+    --subsample, so the orchestrator's own flag crashed the pipeline it had just
+    written. The skeleton must not repeat that."""
+    src = (_REPO / "orchestrator" / "prompts" / "skeleton.py").read_text(encoding="utf-8")
+    for flag in ("--data-dir", "--out-dir", "--split", "--seed", "--subsample"):
+        assert f'"{flag}"' in src, f"skeleton's argparse never declares {flag}"
