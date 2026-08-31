@@ -189,8 +189,20 @@ def kuairand_card(data_dir: Path | str | None = None) -> str:
     A("")
     A("## Files on disk")
     A("")
-    A("Six CSVs, all in one flat directory: `<data-dir>/KuaiRand-Pure/data/`. If that path does")
-    A("not exist, the same six files are directly under `<data-dir>`. Exact names:")
+    # This wording cost a live iteration. The card used to lead with
+    # `<data-dir>/KuaiRand-Pure/data/`, so the first pipeline gpt-4o wrote appended that
+    # to a --data-dir that already ended in it and died on FileNotFoundError. The
+    # orchestrator always passes the directory that *contains* the CSVs, so say that
+    # first and without an alternative to weigh up.
+    A("The six CSVs sit **directly inside the directory passed as `--data-dir`**. Join a")
+    A("filename straight onto it — do not append `KuaiRand-Pure/data/`, `--data-dir`")
+    A("already points at the directory holding these files:")
+    A("")
+    A("```python")
+    A("train_log = os.path.join(args.data_dir, 'log_standard_4_08_to_4_21_pure.csv')")
+    A("```")
+    A("")
+    A("Exact names:")
     A("")
     A("| file | rows | contents |")
     A("|---|---|---|")

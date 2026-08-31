@@ -1422,7 +1422,32 @@ def _whitelist_block(ctx: Context) -> str:
         return ("## Libraries\n\nThe standard library and numpy. Importing anything "
                 "else fails the run.")
     return ("## Libraries\n\nImport only from this list; anything else fails the run:\n"
-            + "\n".join(f"- {lib}" for lib in ctx.library_whitelist))
+            + "\n".join(f"- {lib}" for lib in ctx.library_whitelist)
+            + _API_NOTES)
+
+
+# Measured on the first live run: six of eight iterations died on APIs removed in the
+# major versions we pin. The model writes fluent pandas 1.x and LightGBM 3.x, then
+# rediscovers each breaking change one keyword argument at a time - three iterations
+# went on LightGBM's callback migration alone. The versions were always in the prompt;
+# a version number is not a changelog. Stated once in the cached block, so this costs
+# input tokens once per run rather than once per call.
+_API_NOTES = """
+
+These are pinned to **major versions whose APIs changed**. The removals that bite:
+
+- **pandas 2.x**: `DataFrame.append` is gone - use `pd.concat([a, b])`.
+- **LightGBM 4.x**: `lgb.train()` takes neither `verbose_eval` nor
+  `early_stopping_rounds`; both moved to callbacks:
+  `lgb.train(params, dtrain, valid_sets=[dval],
+  callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)])`
+- **scikit-learn 1.x**: `n_iter` is `max_iter`; `normalize=` was removed from the
+  linear models.
+- **numpy 2.x**: `np.float_`, `np.int0` and `np.NaN` are gone - use `np.float64`,
+  `np.intp`, `np.nan`.
+
+If a call fails with `unexpected keyword argument`, this is why. Look up the current
+signature rather than trying another guess at the old one."""
 
 
 def _fmt_metrics(metrics: dict[str, float] | None) -> str:
