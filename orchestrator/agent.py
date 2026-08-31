@@ -413,6 +413,7 @@ class Agent:
             _task_card(ctx),
             "## Data card\n\n" + (ctx.data_card or "(data card not available)"),
             _whitelist_block(ctx),
+            _skeleton_block(ctx),
         ])
         return [{"type": "text", "text": static,
                  "cache_control": {"type": "ephemeral"}}]
@@ -1448,6 +1449,44 @@ These are pinned to **major versions whose APIs changed**. The removals that bit
 
 If a call fails with `unexpected keyword argument`, this is why. Look up the current
 signature rather than trying another guess at the old one."""
+
+
+SKELETON_PATH = PROMPT_DIR / "skeleton.py"
+
+
+def _skeleton_block(ctx: Context) -> str:
+    """A complete working pipeline, handed to the agent as its starting point.
+
+    Sixteen live iterations produced no valid submission, and not one failure was a
+    modelling error: an argparse that did not declare --subsample, a submission emitted
+    in merge order rather than split order, feature columns computed and then dropped.
+    The agent was spending its whole budget rediscovering the contract.
+
+    So we give the plumbing and withhold the model. This rides in the cached system
+    block, which means it is billed once per run rather than once per call — at roughly
+    1.5k tokens that is the difference between negligible and a tenth of the budget.
+    """
+    try:
+        source = SKELETON_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    header = ",".join(ctx.task.submission_columns) if getattr(
+        ctx.task, "submission_columns", None
+    ) else "row_id,user_id,video_id,score"
+    source = source.replace("__SUBMISSION_HEADER__", header)
+    return (
+        "## A pipeline that already works\n\n"
+        "This runs end to end today: it reads the split in the right order, honours every "
+        "flag, and writes a submission the validator accepts. It predicts a single "
+        "constant, so it learns nothing — that is the point. It is a floor and a proof "
+        "that the path is sound.\n\n"
+        "**Start from it.** Keep the argument parsing, the split loading, the row order "
+        "and the submission writing; they are the parts that have cost real iterations "
+        "when rewritten from scratch. Replace the scoring. You are not required to keep "
+        "any of it, but if you depart from it, do so because the model needs you to and "
+        "not by accident.\n\n"
+        "```python\n" + source + "\n```"
+    )
 
 
 def _fmt_metrics(metrics: dict[str, float] | None) -> str:
