@@ -307,6 +307,22 @@ def _node_from_dict(d: dict) -> Node:
 # ---------------------------------------------------------------------------
 
 
+def _provider_report() -> dict:
+    """Which provider actually served this run, for summary.json.
+
+    Feasibility is scored on tokens, so a run that quietly failed over to the fallback
+    while we reported the primary would make our submitted numbers wrong. Empty when the
+    agent module is absent (stub runs) rather than raising — a reporting nicety must
+    never be able to fail a finished run.
+    """
+    try:
+        from orchestrator import agent as agent_mod
+
+        return dict(agent_mod.provider_report())
+    except Exception:  # noqa: BLE001 - reporting must not sink a completed run
+        return {}
+
+
 class Orchestrator:
     """Drives one run to convergence, the iteration cap, or the wall clock.
 
@@ -1035,6 +1051,7 @@ class Orchestrator:
             "nodes": len(self.tree.nodes),
             "dead_nodes": sum(1 for n in self.tree.nodes.values() if n.status == "dead"),
             **self.acct.snapshot(),
+            **_provider_report(),
         }
         self.journal.emit({"event": "run_end", "iteration": self.iteration, **summary})
         self.checkpoint()

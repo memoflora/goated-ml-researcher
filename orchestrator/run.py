@@ -124,12 +124,19 @@ def resolve_components(args: argparse.Namespace) -> tuple[Any, Any, Any, Any, An
     chosen: dict[str, str] = {}
 
     agent = None
-    if args.agent == "auto":
+    if args.agent == "replay":
+        # Canned real pipelines, no key and no tokens. Reachable via TECHJAM_AGENT too,
+        # but a flag is what people actually find: this is the path that exercises the
+        # whole loop for free, so it should not be discoverable only by reading code.
+        agent_mod = _load("orchestrator.agent", ("draft", "improve", "repair"))
+        if agent_mod is not None:
+            agent, chosen["agent"] = agent_mod.ReplayAgent(), "replay"
+    elif args.agent == "auto":
         agent = _load("orchestrator.agent", ("draft", "improve", "repair"))
+        if agent is not None:
+            chosen["agent"] = "orchestrator.agent"
     if agent is None:
         agent, chosen["agent"] = StubAgent(), "stub"
-    else:
-        chosen["agent"] = "orchestrator.agent"
 
     executor = None
     if args.sandbox == "auto":
@@ -184,7 +191,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--subsample", type=float, default=None)
     ap.add_argument("--timeout", type=int, default=None, help="per-pipeline timeout, seconds")
     ap.add_argument("--token-budget", type=int, default=None)
-    ap.add_argument("--agent", choices=("auto", "stub"), default=None)
+    ap.add_argument("--agent", choices=("auto", "stub", "replay"), default=None)
     ap.add_argument("--sandbox", choices=("auto", "stub"), default=None)
     ap.add_argument("--evaluator", choices=("auto", "stub"), default=None)
     args = ap.parse_args(argv)
