@@ -34,3 +34,6 @@ Thumbs.db
 
 # Generated demo fixture — rebuild with `python tools/make_demo_data.py`
 data/demo-regression/
+
+# agent worktrees — real git repos; committing them creates gitlinks in main
+.claude/worktrees/
