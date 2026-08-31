@@ -61,4 +61,8 @@ limits:
   max_iters: 50
   wall_clock_s: 21600
   conv_eps: 0.002
-  conv_n: 3
+  # conv_n is 4, not 3, so exploration gets two scored iterations of runway before
+  # convergence can end the run. The gpt-5.1 run converged at 13 of 50 iterations on
+  # 270k of a 4M token budget, 0.0098 under baseline, having never once explored.
+  conv_n: 4
+  explore_after: 2

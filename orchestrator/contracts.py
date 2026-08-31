@@ -78,6 +78,13 @@ class TaskSpec:
     wall_clock_s: int = 6 * 3600
     conv_eps: float = 0.002
     conv_n: int = 3
+    #: Flat scored iterations before the policy stops improving the best node and
+    #: explores the second-best distinct one instead. **Must be < `conv_n`.**
+    #: `best_history` is monotone, so `converged()` can only fire once the last
+    #: `conv_n` iterations were each flat — meaning `flat_iters >= conv_n` by then.
+    #: If this is not strictly smaller, the run always stops on the very iteration
+    #: exploration became reachable and the explore branch never executes at all.
+    explore_after: int = 2
 
     #: "ranking" | "binary" | "multiclass" | "regression"
     kind: str = "ranking"

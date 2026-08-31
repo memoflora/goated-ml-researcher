@@ -230,3 +230,92 @@ def test_noise_bucketing_is_symmetric(delta):
         mk("n001", primary=0.6200 + delta, code="x" * 500),
     )
     assert best_node(t).id == "n001"
+
+
+# ----------------------------------------------------- explore reachability
+#
+# The bug these guard: `explore_after` and `conv_n` both defaulted to 3, so the
+# orchestrator stopped on exactly the iteration the explore branch first became
+# reachable. `test_three_flat_iterations_trigger_explore_on_the_second_best`
+# passed throughout — it calls `next_action(flat_iters=3)` directly and proves
+# the branch works. Nothing proved the state was reachable in a real run.
+
+
+def replay(scores, *, eps, conv_n, explore_after):
+    """Replay a scored trajectory exactly as `Orchestrator` bookkeeps it.
+
+    Returns (first_explore_iteration, first_converged_iteration), 1-indexed and
+    None when it never happens. Mirrors `core.py`: `_should_stop()` is evaluated
+    at the *start* of an iteration, before `next_action` picks a move, so
+    converging on iteration k means the explore branch on k never executes.
+    """
+    best_history: list[float] = []
+    flat = 0
+    prev_best = None
+    first_explore = first_converged = None
+    for i, s in enumerate(scores, start=1):
+        # A run stops before it acts, so check convergence against what the
+        # previous iteration left behind.
+        if first_converged is None and converged(best_history, eps=eps, n=conv_n):
+            first_converged = i
+            break
+        if first_explore is None and flat >= explore_after:
+            first_explore = i
+        best = s if prev_best is None else max(prev_best, s)
+        flat = flat + 1 if is_flat(prev_best, best, eps) else 0
+        best_history.append(best)
+        prev_best = best
+    else:
+        if first_converged is None and converged(best_history, eps=eps, n=conv_n):
+            first_converged = len(scores) + 1
+    return first_explore, first_converged
+
+
+def test_explore_is_reachable_before_convergence_on_the_real_plateau():
+    """The gpt-5.1 run's own trajectory (docs/handover/01-results.md).
+
+    Under the shipped defaults (3, 3) the run halts at the start of iteration 7,
+    after 6 scored iterations — and flat_iters reaches the explore threshold at
+    exactly that moment, so the branch never executes. The task now sets
+    explore_after=2 < conv_n=4.
+    """
+    scores = [0.58458, 0.56031, 0.59073, 0.59184, 0.59040, 0.59184]
+
+    broken_explore, broken_conv = replay(scores, eps=0.002, conv_n=3, explore_after=3)
+    assert broken_conv == 7 and broken_explore is None, (
+        "the historical config must reproduce the bug, or this test proves nothing"
+    )
+
+    fixed_explore, fixed_conv = replay(scores, eps=0.002, conv_n=4, explore_after=2)
+    assert fixed_explore is not None
+    assert fixed_conv is None or fixed_explore < fixed_conv
+
+
+@pytest.mark.parametrize("conv_n", [2, 3, 4, 5])
+def test_convergence_always_implies_explore_was_reachable_first(conv_n):
+    """`explore_after < conv_n` is sufficient, for any trajectory.
+
+    `best_history` is monotone, so `converged()` can only fire once each of the
+    last conv_n improvements was <= eps — i.e. flat_iters >= conv_n by then.
+    Anything strictly smaller must therefore have fired earlier.
+    """
+    import itertools
+
+    eps, explore_after = 0.002, conv_n - 1
+    steps = (0.0, 0.001, 0.05)  # flat-by-zero, flat-under-eps, a real jump
+    for combo in itertools.product(steps, repeat=6):
+        scores = [0.5]
+        for d in combo:
+            scores.append(scores[-1] + d)
+        explore, conv = replay(scores, eps=eps, conv_n=conv_n, explore_after=explore_after)
+        if conv is not None:
+            assert explore is not None and explore < conv, (
+                f"converged at {conv} without ever exploring; trajectory={scores}"
+            )
+
+
+def test_equal_explore_after_and_conv_n_is_the_bug():
+    """Kept as the counter-example: equal values make explore unreachable."""
+    flat_run = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+    explore, conv = replay(flat_run, eps=0.002, conv_n=3, explore_after=3)
+    assert conv is not None and explore is None

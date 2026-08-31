@@ -117,6 +117,31 @@ def test_date_split_needs_a_column_and_ranges():
         ts.parse_task(raw)
 
 
+def test_explore_after_defaults_below_conv_n():
+    """The policy's explore branch is unreachable unless this holds."""
+    t = ts.parse_task(dict(MINIMAL))
+    assert t.explore_after < t.conv_n
+
+
+def test_explore_after_and_conv_n_parse_from_limits():
+    raw = dict(MINIMAL, limits={"conv_n": 6, "explore_after": 3})
+    t = ts.parse_task(raw)
+    assert (t.conv_n, t.explore_after) == (6, 3)
+
+
+@pytest.mark.parametrize("explore_after,conv_n", [(3, 3), (4, 3), (5, 2)])
+def test_explore_after_at_or_above_conv_n_is_rejected(explore_after, conv_n):
+    """The bug that cost a live run 37 iterations, now unrepresentable.
+
+    With explore_after >= conv_n the run stops on exactly the iteration the
+    explore branch first becomes reachable, so a plateau ends the search instead
+    of redirecting it. A task file may no longer express that.
+    """
+    raw = dict(MINIMAL, limits={"conv_n": conv_n, "explore_after": explore_after})
+    with pytest.raises(ts.TaskConfigError, match="explore_after"):
+        ts.parse_task(raw)
+
+
 def test_a_task_without_its_own_bank_gets_the_domain_free_default():
     """Inheriting another dataset's idea bank means inheriting its conclusions."""
     t = ts.parse_task(dict(MINIMAL))
@@ -131,6 +156,16 @@ def test_the_shipped_tasks_all_parse():
     assert "kuairand-pure" in names
     for name in names:
         ts.load_task(name)
+
+
+def test_every_shipped_task_can_actually_explore():
+    """Guards the whole `tasks/` directory, not just the one we edited."""
+    for name in ts.available_tasks():
+        t = ts.load_task(name)
+        assert t.explore_after < t.conv_n, (
+            f"{name}: explore_after={t.explore_after} >= conv_n={t.conv_n}, so the "
+            "policy's explore branch can never run"
+        )
 
 
 def test_kuairand_task_matches_the_published_numbers():

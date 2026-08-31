@@ -461,6 +461,7 @@ class Orchestrator:
             flat_iters=self.flat_iters,
             n_drafts=self.n_drafts,
             max_repairs=self.max_repairs,
+            explore_after=self.task.explore_after,
         )
         target = self.tree.get(action.parent_id)
 
@@ -1120,6 +1121,7 @@ class Orchestrator:
                         "wall_clock_s": self.task.wall_clock_s,
                         "conv_eps": self.task.conv_eps,
                         "conv_n": self.task.conv_n,
+                        "explore_after": self.task.explore_after,
                     },
                 },
                 indent=1,
@@ -1138,6 +1140,7 @@ class Orchestrator:
                 "wall_clock_s": self.task.wall_clock_s,
                 "conv_eps": self.task.conv_eps,
                 "conv_n": self.task.conv_n,
+                "explore_after": self.task.explore_after,
                 "baseline_val": self.task.baseline_val,
                 "ceiling": self.task.ceiling,
                 "subsample": self.subsample,
@@ -1476,4 +1479,5 @@ def task_from_config(cfg: dict) -> TaskSpec:
         wall_clock_s=t.get("wall_clock_s", 6 * 3600),
         conv_eps=t.get("conv_eps", 0.002),
         conv_n=t.get("conv_n", 3),
+        explore_after=t.get("explore_after", 2),
     )

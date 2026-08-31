@@ -43,3 +43,4 @@ limits:
   wall_clock_s: 3600
   conv_eps: 1.0        # in target units (currency), not a 0-1 score
   conv_n: 3
+  explore_after: 2     # must stay < conv_n, or the explore branch never runs

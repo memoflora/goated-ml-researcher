@@ -98,6 +98,7 @@ def build_task(args: argparse.Namespace, cfg: dict) -> TaskSpec:
         ),
         conv_eps=tc.conv_eps,
         conv_n=tc.conv_n,
+        explore_after=tc.explore_after,
         kind=tc.kind,
         description=tc.description,
         primary_parts=tc.primary_parts,

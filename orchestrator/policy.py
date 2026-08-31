@@ -12,9 +12,18 @@ Priority order, highest first:
    from a different angle each time. Independent drafts are the only cheap
    protection against a bad first program anchoring the whole search.
 3. **rescue.** No scored node and nothing repairable: draft again.
-4. **explore.** After `flat_iters` scored iterations with no real improvement,
+4. **explore.** After `explore_after` scored iterations with no real improvement,
    improve the *second-best distinct* node instead of the best one; if there is
    no distinct alternative, draft a fresh angle.
+
+   This rule is only reachable while **`explore_after < conv_n`**, and the caller
+   is responsible for that (`taskspec` rejects a config where it does not hold).
+   `best_history` is monotone non-decreasing, so `converged()` can only fire once
+   each of the last `conv_n` iterations was flat — by which point
+   `flat_iters >= conv_n`. Set the two equal and the orchestrator stops on exactly
+   the iteration this branch first becomes reachable, so it never runs: a plateau
+   ends the run instead of redirecting the search, which is the opposite of the
+   intent. Both defaulted to 3 for the whole of the first live campaign.
 5. **greedy improve** on the best node.
 
 Ties inside seed noise (0.0008) go to the *simpler* node. Validation is not the
@@ -121,7 +130,7 @@ def next_action(
     flat_iters: int = 0,
     n_drafts: int = 3,
     max_repairs: int = 3,
-    explore_after: int = 3,
+    explore_after: int = 2,
     noise: float = SEED_NOISE,
     angles: Sequence[str] = DRAFT_ANGLES,
 ) -> Action:

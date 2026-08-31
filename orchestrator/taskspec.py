@@ -92,6 +92,9 @@ class TaskConfig:
     wall_clock_s: int = 6 * 3600
     conv_eps: float = 0.002
     conv_n: int = 3
+    #: Flat scored iterations before the policy explores instead of improving the
+    #: best node. Validated to be < `conv_n`; see `TaskSpec.explore_after`.
+    explore_after: int = 2
     seed_std: float | None = None
     #: Idea bank for this task. Domain knowledge is per-problem — a bank of recommender
     #: ideas is worse than useless on a regression task, because the agent will try them.
@@ -264,6 +267,28 @@ def parse_task(raw: dict, *, source: Path | None = None) -> TaskConfig:
     base = raw.get("baseline") or {}
     limits = raw.get("limits") or {}
 
+    # The policy's explore branch is only reachable while explore_after < conv_n.
+    # `best_history` is monotone non-decreasing, so `converged()` can only fire once
+    # every one of the last conv_n iterations was flat — i.e. flat_iters >= conv_n by
+    # then. If exploration needs at least that many flat iterations, the run always
+    # stops on the very iteration exploration became reachable, and the branch that is
+    # supposed to break a plateau never executes. Enforced here rather than left to a
+    # comment: this shipped as a silent default-vs-default collision (3 and 3) and cost
+    # a live run 37 unused iterations at a plateau 0.0098 under baseline.
+    conv_n = int(limits.get("conv_n", 3))
+    explore_after = int(limits.get("explore_after", 2))
+    if explore_after < 1:
+        raise TaskConfigError(
+            f"{where}.limits: explore_after={explore_after}; must be >= 1"
+        )
+    if explore_after >= conv_n:
+        raise TaskConfigError(
+            f"{where}.limits: explore_after={explore_after} must be < conv_n={conv_n}, "
+            "otherwise the run converges on the same iteration the policy would first "
+            "explore and the explore branch can never run. Lower explore_after or raise "
+            "conv_n."
+        )
+
     return TaskConfig(
         name=name,
         kind=kind,  # type: ignore[arg-type]
@@ -279,7 +304,8 @@ def parse_task(raw: dict, *, source: Path | None = None) -> TaskConfig:
         max_iters=int(limits.get("max_iters", 50)),
         wall_clock_s=int(limits.get("wall_clock_s", 6 * 3600)),
         conv_eps=float(limits.get("conv_eps", 0.002)),
-        conv_n=int(limits.get("conv_n", 3)),
+        conv_n=conv_n,
+        explore_after=explore_after,
         seed_std=float(raw["seed_std"]) if raw.get("seed_std") is not None else None,
         ideas_path=_resolve_ideas(raw.get("ideas"), where),
         notes=str(raw.get("notes") or "").strip(),
