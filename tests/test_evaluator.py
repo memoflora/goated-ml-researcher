@@ -581,3 +581,65 @@ class TestPipelineWhitelistIsHonest:
             "the whitelist pins versions the environment does not have: "
             + "; ".join(drift)
         )
+
+
+class TestLeakageMasking:
+    """The most expensive bug of the project, and the one a prompt could not fix.
+
+    An official run scored primary 0.8484 with GAUC 0.99999 — the oracle ceiling, which
+    no model reaches. It had computed per-item rates from the evaluation split and
+    predicted that split with them. Blanking the label alone did not help: the run still
+    scored 0.84839, because `is_click` (corr 0.75 with long_view) and `play_time_ms`
+    carry the answer just as well. Every column the impression *produced* is the future
+    on an evaluation row.
+
+    Re-run against the full mask, that same pipeline scores 0.4794 — below random — and
+    its correlation with the label falls from 0.98931 to -0.04.
+    """
+
+    def test_post_outcome_columns_are_masked_not_just_the_label(self):
+        from orchestrator import masking
+
+        for col in ("long_view", "is_click", "play_time_ms", "is_like", "is_follow"):
+            assert col in masking.POST_OUTCOME, f"{col} is an outcome and must be hidden"
+
+    def test_pre_impression_columns_survive(self):
+        """Masking too much would be its own bug: these are knowable before the
+        impression, and the organisers' own baseline is built from them."""
+        from orchestrator import masking
+
+        for col in ("user_id", "video_id", "date", "duration_ms", "tab"):
+            assert col not in masking.POST_OUTCOME, f"{col} is legitimate input"
+
+    def test_visibility_matches_the_rules_exactly(self):
+        from orchestrator import masking
+
+        assert masking.HIDDEN["val"] == ("valid", "test"), "val runs train on train only"
+        assert masking.HIDDEN["test"] == ("test",), "test runs may train on train+valid"
+
+    @pytest.mark.skipif(
+        not (Path(__file__).resolve().parents[1] / "data" / "KuaiRand-Pure" / "data"
+             / "log_standard_4_22_to_5_08_pure.csv").is_file(),
+        reason="needs the real KuaiRand dataset",
+    )
+    @pytest.mark.skipif(
+        os.environ.get("TECHJAM_SLOW_TESTS") != "1",
+        reason="rewrites ~106MB of CSV; set TECHJAM_SLOW_TESTS=1",
+    )
+    def test_the_mask_removes_the_answer_and_keeps_the_rows(self, tmp_path):
+        import pandas as pd
+
+        from orchestrator import masking
+
+        src = Path(__file__).resolve().parents[1] / "data" / "KuaiRand-Pure" / "data"
+        out = masking.masked_data_dir(src, "val", tmp_path)
+        f = "log_standard_4_22_to_5_08_pure.csv"
+        raw, mask = pd.read_csv(src / f), pd.read_csv(out / f)
+
+        assert len(raw) == len(mask), "rows must survive; only the outcome goes"
+        ev = (mask["date"] >= 20220422) & (mask["date"] <= 20220428)
+        for col in ("long_view", "is_click", "play_time_ms"):
+            assert mask.loc[ev, col].notna().sum() == 0, f"{col} still visible on eval rows"
+        tr = mask["date"] <= 20220421
+        if tr.any():
+            assert mask.loc[tr, "long_view"].notna().all(), "train labels must remain"
