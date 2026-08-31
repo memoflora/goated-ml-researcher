@@ -10,6 +10,7 @@ the wire, so accounting assertions in tests mean something.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from orchestrator.contracts import Context, Node, Proposal
@@ -22,12 +23,69 @@ DRAFT_ANGLES = (
     "start from a gradient-boosted tree over hand-built count features",
 )
 
+#: What the rendered pipeline is told about the task. Everything is optional — the
+#: pipeline detects whatever is missing from the directory it is pointed at — but
+#: passing it means the stub does not have to guess a schema it was handed for free.
+DEFAULT_SPEC: dict = {
+    "columns": ["row_id", "user_id", "video_id", "score"],
+    "prediction_column": "score",
+    "loader": "auto",
+}
 
-def render_pipeline(variant: str, n_rows: int = 1000) -> str:
+
+def spec_for(task) -> dict:
+    """Derive the pipeline's spec from a `TaskSpec`.
+
+    This is the whole fix for the misalignment bug. The stub used to be handed a row
+    *count* and invent ids from it, which can align with nothing; it is now handed the
+    submission schema and reads the ids out of the real split.
+    """
+    spec = dict(DEFAULT_SPEC)
+    if task is None:
+        return spec
+
+    columns = getattr(task, "submission_columns", None)
+    if columns:
+        spec["columns"] = list(columns)
+    spec["prediction_column"] = getattr(task, "prediction_column", None) or spec["columns"][-1]
+
+    cfg = getattr(task, "config", None)
+    if cfg is None:
+        return spec
+
+    data = getattr(cfg, "data", None)
+    if data is None:
+        return spec
+    if getattr(data, "loader", "") == "starter_kit":
+        spec["loader"] = "starter_kit"
+    if getattr(data, "target", None):
+        spec["target"] = data.target
+
+    plan = getattr(data, "split", None)
+    if plan is not None and getattr(plan, "strategy", None) == "date":
+        ranges = getattr(plan, "ranges", None) or {}
+        spec["ranges"] = {
+            {"val": "valid"}.get(k, k): [int(lo), int(hi)] for k, (lo, hi) in ranges.items()
+        }
+        spec["date_column"] = getattr(plan, "date_column", None) or "date"
+    if getattr(data, "files", None):
+        spec["log_files"] = list(data.files.values())
+    return spec
+
+
+def render_pipeline(variant: str, n_rows: int = 1000, *, spec: dict | None = None) -> str:
+    """Render the canned pipeline.
+
+    `n_rows` is retained only so the old positional call keeps working; the pipeline no
+    longer invents rows, it reads them. Passing a row count is exactly what made the old
+    stub unable to align with any real split.
+    """
+    del n_rows
+    payload = json.dumps(spec if spec is not None else DEFAULT_SPEC, sort_keys=True)
     return (
         _TMPL.read_text(encoding="utf-8")
         .replace("__VARIANT__", variant)
-        .replace("__N_ROWS__", str(n_rows))
+        .replace("__SPEC_JSON__", payload)
     )
 
 
@@ -37,6 +95,8 @@ class StubAgent:
     model = "stub-agent-v1"
 
     def __init__(self, *, n_rows: int = 1000, empty_hypothesis_once: bool = False) -> None:
+        #: Kept for callers that still pass it; the rendered pipeline reads its row count
+        #: off the real split now, because a made-up one can align with nothing.
         self.n_rows = n_rows
         self.calls: list[str] = []
         self._empty_once = empty_hypothesis_once
@@ -97,7 +157,7 @@ class StubAgent:
         if self._empty_once:
             self._empty_once = False
             hypothesis = ""
-        code = render_pipeline(variant, self.n_rows)
+        code = render_pipeline(variant, spec=spec_for(getattr(ctx, "task", None)))
         prompt_chars = (
             len(ctx.data_card)
             + len(ctx.parent_code or "")

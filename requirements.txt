@@ -1,9 +1,14 @@
 # Orchestrator dependencies. The generated pipeline.py may NOT import from here —
 # its whitelist is requirements-pipeline.txt (owner: C).
 #
-# Both providers are installed. agent.py speaks the Anthropic Messages shape and
-# adapts OpenAI to it, so the orchestrator never knows which one is live — and we
-# can switch providers mid-weekend without a code change if one starts throttling.
+# agent.py speaks the Anthropic Messages shape and adapts the others to it, so the
+# orchestrator never knows which one is live — that is what lets TECHJAM_FALLBACK_LLM
+# switch providers mid-run when one starts throttling, with no code change.
+#
+# Gemini is deliberately absent from this list: it is two REST endpoints, reached with
+# `urllib` from the standard library. We already turn every SDK's own retries off (we
+# own the retry and failover policy), so a third provider SDK would buy us nothing and
+# add one more thing that can fail to install on Python 3.14 the weekend it matters.
 anthropic==0.51.0
 openai==1.66.5
 pytest==8.3.4

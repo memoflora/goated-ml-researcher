@@ -50,10 +50,16 @@ _TIME_POLL_S = 0.2
 _RSS_POLL_S = 1.0
 
 # Anything matching these never reaches the child process or the workspace.
+#
+# `GEMINI_` and `GOOGLE_` are here by prefix, not only via the `API_KEY$` rule, because
+# Google's credential variables are not all named `*_API_KEY` —
+# `GOOGLE_APPLICATION_CREDENTIALS` points at a service-account file, and handing a
+# generated pipeline the path to one is the same leak by a slower route.
 _SECRET_PATTERNS = (
     re.compile(r"API_KEY$"), re.compile(r"^ANTHROPIC_"), re.compile(r"TOKEN$"),
     re.compile(r"SECRET"), re.compile(r"PASSWORD"), re.compile(r"^AWS_"),
     re.compile(r"^OPENAI_"), re.compile(r"^GH_"), re.compile(r"^GITHUB_TOKEN"),
+    re.compile(r"^GEMINI_"), re.compile(r"^GOOGLE_"),
 )
 
 # Injected as sitecustomize.py in the node workspace. Blocks outbound sockets so a

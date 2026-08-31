@@ -149,6 +149,18 @@ class TestIsolation:
             if path.is_file():
                 assert "sk-ant-should-never-appear" not in path.read_text(errors="replace")
 
+    def test_google_credentials_are_stripped_too(self, make_node, data_dir, monkeypatch):
+        """`GOOGLE_APPLICATION_CREDENTIALS` is not named `*_API_KEY`, so it slipped
+        through the suffix rule — handing a generated pipeline the path to a
+        service-account file is the same leak by a slower route."""
+        monkeypatch.setenv("GEMINI_API_KEY", "AQ.should-never-appear")
+        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/tmp/sa.json")
+        node = make_node("env_probe.py")
+        r = sandbox.run(node, data_dir=data_dir, **FAST)
+        assert r.ok and r.result_json["leaked"] == []
+        for name in ("GEMINI_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"):
+            assert sandbox._is_secret(name), f"{name} must never reach the child"
+
     def test_seed_reaches_the_child_as_pythonhashseed(self, make_node, data_dir):
         r = sandbox.run(make_node("env_probe.py"), split="val", seed=7,
                         timeout_s=30, mem_limit_mb=1024, data_dir=data_dir)
