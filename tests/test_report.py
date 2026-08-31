@@ -60,7 +60,8 @@ def test_counts_interventions_when_present(tmp_path):
     j = tmp_path / "journal.jsonl"
     j.write_text(
         json.dumps({"run_id": "r1", "event": "intervention", "iteration": 3}) + "\n"
-        + json.dumps({"run_id": "r1", "event": "intervention", "iteration": 7}) + "\n"
+        + json.dumps({"run_id": "r1", "event": "intervention", "iteration": 7}) + "\n",
+        encoding="utf-8",
     )
     s = report.summarise(report.read_journal(j))
     assert s.interventions == 2
@@ -81,7 +82,8 @@ def test_falls_back_to_trajectory_best_without_best_updated(tmp_path):
             )
             for i, p in enumerate([0.60, 0.63, 0.61], start=1)
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     s = report.summarise(report.read_journal(j))
     assert s.best["node_id"] == "n002"
@@ -89,7 +91,7 @@ def test_falls_back_to_trajectory_best_without_best_updated(tmp_path):
 
 def test_renders_the_absolute_delta_over_baseline(run_dir):
     report.build(run_dir)
-    md = (run_dir / "RESULTS.md").read_text()
+    md = (run_dir / "RESULTS.md").read_text(encoding="utf-8")
     assert "absolute delta" in md
     assert "+0.0145" in md  # primary 0.6161 - 0.6016
     assert "Manual interventions during this run: 0" in md
@@ -98,7 +100,7 @@ def test_renders_the_absolute_delta_over_baseline(run_dir):
 
 def test_records_every_hypothesis(run_dir):
     report.build(run_dir)
-    md = (run_dir / "RESULTS.md").read_text()
+    md = (run_dir / "RESULTS.md").read_text(encoding="utf-8")
     # including the node that died -- what it tried still counts for Innovation
     assert "n003" in md
     assert "out-of-fold smoothed item CTR priors" in md
@@ -115,10 +117,10 @@ def test_writes_trajectory_png(run_dir):
 def test_empty_journal_still_renders(tmp_path):
     d = tmp_path / "empty"
     d.mkdir()
-    (d / "journal.jsonl").write_text("")
+    (d / "journal.jsonl").write_text("", encoding="utf-8")
     s = report.build(d)
     assert s.best is None
-    assert "No scored node" in (d / "RESULTS.md").read_text()
+    assert "No scored node" in (d / "RESULTS.md").read_text(encoding="utf-8")
 
 
 def test_missing_journal_raises(tmp_path):
