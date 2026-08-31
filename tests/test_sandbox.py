@@ -11,6 +11,7 @@ from orchestrator.sandbox import (
     check_submission,
     classify,
     excerpt,
+    native_crash_note,
     parse_result_json,
 )
 
@@ -54,6 +55,51 @@ class TestClassify:
         if not hasattr(signal, "SIGKILL"):
             pytest.skip("SIGKILL is POSIX-only; Windows never delivers it")
         assert classify(-signal.SIGKILL, TB) == "runtime"
+
+    def test_a_fatal_signal_without_a_traceback_is_a_native_crash(self):
+        """Not `runtime`: there is no traceback, so a repair has nothing to read.
+
+        Run r20260831-0741 lost its submission here — three repair attempts against
+        a bare "exited with status -11" produced the same crash three times.
+        """
+        for name in ("SIGSEGV", "SIGABRT", "SIGILL", "SIGFPE"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            assert classify(-int(sig), "") == "native_crash", name
+            assert classify(128 + int(sig), "") == "native_crash", f"128+{name}"
+
+    def test_windows_access_violation_is_a_native_crash(self):
+        """0xC0000005 is what the winning node actually died with, on Windows."""
+        assert classify(0xC0000005, "") == "native_crash"
+        assert classify(0xC00000FD, "") == "native_crash"
+
+    def test_a_traceback_beats_a_fatal_signal(self):
+        """A Python exception is readable, so it stays `runtime` and keeps the excerpt."""
+        assert classify(-int(signal.SIGSEGV), TB) == "runtime"
+
+    def test_sigkill_is_still_oom_not_a_native_crash(self):
+        """The OOM killer must not be swallowed by the new class."""
+        if not hasattr(signal, "SIGKILL"):
+            pytest.skip("SIGKILL is POSIX-only")
+        assert classify(-signal.SIGKILL, "") == "oom"
+
+    def test_bad_alloc_is_oom_even_though_it_aborts(self):
+        """C++ allocation failure aborts, but it is a memory problem, not a crash."""
+        assert classify(-int(signal.SIGABRT), "terminate called: std::bad_alloc") == "oom"
+
+    def test_kill_reason_still_wins_over_a_fatal_signal(self):
+        assert classify(-int(signal.SIGSEGV), "", kill_reason="timeout") == "timeout"
+        assert classify(-int(signal.SIGSEGV), "", kill_reason="memory") == "oom"
+
+    def test_the_note_names_the_cause_and_the_levers(self):
+        """`excerpt()` returns None on a crash, so this text is all the model gets."""
+        note = native_crash_note(-int(signal.SIGSEGV), 7900.0)
+        assert "SIGSEGV" in note
+        assert "7900 MB" in note
+        for lever in ("no Python traceback", "same code will crash", "configuration"):
+            assert lever in note, lever
+        assert "0xC0000005" in native_crash_note(0xC0000005, 12.0)
 
     def test_clean_exit_is_unknown_not_runtime(self):
         assert classify(0, "") == "unknown"

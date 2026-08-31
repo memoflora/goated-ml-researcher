@@ -51,6 +51,21 @@ Read the error class first, because it usually names the fix:
 - `timeout` — too slow. Cut the work: fewer epochs, a smaller candidate set, a cheaper
   feature. Do not simply hope it is faster next time.
 - `oom` — too much memory at once. Stream, batch, or use a narrower dtype.
+- `native_crash` — the process died on a signal or a Windows access violation and left
+  **no Python traceback**: something crashed inside a compiled library (LightGBM,
+  XGBoost, NumPy, a BLAS), not inside your Python. There is no line to fix, so do not
+  hunt for one, and **do not resubmit the same program** — it will crash identically.
+  Change the configuration instead, cheapest first:
+    - Single-thread the native library: `num_threads=1` (LightGBM) or `nthread=1`
+      (XGBoost), and set `OMP_NUM_THREADS=1` before importing it. Threaded native code
+      is the most common cause by a wide margin.
+    - Hand it plain, contiguous `float32` NumPy (`np.ascontiguousarray(X, dtype=np.float32)`)
+      rather than a DataFrame with mixed, nullable or object dtypes.
+    - Drop the categorical fast path — encode categoricals as integer codes yourself
+      instead of passing `category`-dtype columns.
+    - Shrink what crosses into native code: fewer rows, fewer leaves, a smaller `max_bin`.
+  If it crashed on `--split test` but ran fine on `--split val`, the only difference is
+  the larger train+validation fit, so treat it as scale and cut threads and memory first.
 - `runtime` / `data` — read the traceback and fix the specific failure it names.
 
 Return the hypothesis (what the error was and why your change fixes it), a short plan, and

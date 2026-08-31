@@ -15,7 +15,12 @@ from typing import Literal
 NodeKind = Literal["draft", "improve", "debug"]
 NodeStatus = Literal["pending", "running", "ok", "buggy", "timeout", "dead"]
 ErrorClass = Literal[
-    "syntax", "import", "data", "runtime", "oom", "timeout", "contract", "eval", "unknown"
+    "syntax", "import", "data", "runtime", "oom", "timeout", "contract", "eval",
+    # A compiled extension died without raising: no traceback, so nothing textual for
+    # the repair loop to reason about unless we say what happened. Separate from
+    # `runtime` because the fix is a different configuration, never a different line.
+    "native_crash",
+    "unknown",
 ]
 
 #: Journal `event` values. The journal is a graded deliverable; keep this closed.

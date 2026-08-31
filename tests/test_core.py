@@ -771,8 +771,9 @@ class TestTestPathProbe:
     class _SplitAwareExecutor:
         """Succeeds on val; behaves as configured on test."""
 
-        def __init__(self, *, test_ok: bool):
+        def __init__(self, *, test_ok: bool, fail_class: str = "runtime"):
             self.test_ok = test_ok
+            self.fail_class = fail_class
             self.splits: list[str] = []
 
         def run(self, node, *, split, seed, timeout_s, subsample=None, **kw):
@@ -780,6 +781,15 @@ class TestTestPathProbe:
 
             self.splits.append(split)
             if split == "test" and not self.test_ok:
+                if self.fail_class == "native_crash":
+                    msg = ("the process was killed by signal 11 (SIGSEGV) and printed no "
+                           "Python traceback. ... the fix is a different configuration, "
+                           "not a different line.")
+                    return ExecResult(
+                        ok=False, exit_code=-11, stdout_tail="", stderr_tail="",
+                        error_class="native_crash", error_excerpt=msg, result_json=None,
+                        artifacts={}, wall_s=0.1, peak_rss_mb=0.0,
+                    )
                 msg = "AttributeError: 'DataFrame' object has no attribute 'append'"
                 return ExecResult(
                     ok=False, exit_code=1, stdout_tail="", stderr_tail=msg,
@@ -794,12 +804,21 @@ class TestTestPathProbe:
                 artifacts={"submission": sub}, wall_s=0.1, peak_rss_mb=0.0,
             )
 
-    def _run(self, tmp_path, *, test_ok):
-        ex = self._SplitAwareExecutor(test_ok=test_ok)
+    def _run(self, tmp_path, *, test_ok, fail_class="runtime", spy=False):
+        ex = self._SplitAwareExecutor(test_ok=test_ok, fail_class=fail_class)
         orch = build(tmp_path, max_iters=1, probe_test_path=True)
         orch.executor = ex
+        seen: list = []
+        if spy:
+            inner = orch.agent.repair
+
+            def watch(ctx, node):
+                seen.append(ctx)
+                return inner(ctx, node)
+
+            orch.agent.repair = watch
         summary = orch.run()
-        return summary, ex
+        return (summary, ex, seen) if spy else (summary, ex)
 
     def test_a_node_whose_test_path_runs_is_accepted(self, tmp_path):
         summary, ex = self._run(tmp_path, test_ok=True)
@@ -822,6 +841,25 @@ class TestTestPathProbe:
             "a node was denied `best` for a broken test path; that is the regression "
             "this test exists to prevent"
         )
+
+    def test_a_segfaulting_test_branch_is_not_described_as_a_contract_breach(self, tmp_path):
+        """The finalisation repair used to hardcode error_class="contract".
+
+        repair.md tells the model to read the error class first because it names the
+        fix — so a native crash announced as `contract` sends it hunting for a bad
+        header while the process is segfaulting. Run r20260831-0741 died on a LightGBM
+        access violation and spent all three repair attempts on the wrong diagnosis.
+        """
+        _, _, contexts = self._run(
+            tmp_path, test_ok=False, fail_class="native_crash", spy=True
+        )
+        assert contexts, "finalisation never attempted a test-path repair"
+        classes = [c.error_class for c in contexts]
+        assert "native_crash" in classes, (
+            f"the repair prompt was told error_class={classes!r}; the probe saw a "
+            "native crash and that is what the model must be told"
+        )
+        assert "contract" not in classes
 
     def test_the_broken_branch_is_recorded_for_repair_not_silently_dropped(self, tmp_path):
         run_dir = Path(tmp_path) / "rtest"

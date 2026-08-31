@@ -317,7 +317,7 @@ def test_system_prompt_demands_a_hypothesis_before_the_change():
 def test_repair_prompt_forbids_scope_creep():
     text = (PROMPTS / "repair.md").read_text(encoding="utf-8").lower()
     assert "change nothing else" in text
-    for cls in ("syntax", "import", "contract", "timeout", "oom"):
+    for cls in ("syntax", "import", "contract", "timeout", "oom", "native_crash"):
         assert cls in text, f"repair.md gives no guidance for error_class={cls}"
 
 

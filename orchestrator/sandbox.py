@@ -45,6 +45,25 @@ EXCERPT_CHARS = 1500
 RESULT_PREFIX = "RESULT_JSON"
 SUBMISSION_HEADER = "row_id,user_id,video_id,score"
 _SIGKILL = getattr(signal, "SIGKILL", 9)  # Windows has no SIGKILL; keep the POSIX value
+
+#: Signals that mean a compiled extension died, taken from the platform rather than
+#: hardcoded (SIGBUS is 7 on Linux and 10 on macOS). SIGKILL is deliberately absent:
+#: that is the OOM killer, and it is classified `oom` above this.
+_NATIVE_SIGNALS = frozenset(
+    int(getattr(signal, name))
+    for name in ("SIGSEGV", "SIGBUS", "SIGILL", "SIGFPE", "SIGABRT")
+    if hasattr(signal, name)
+)
+
+#: NTSTATUS codes a crashed process exits with on Windows. 0xC0000005 is the access
+#: violation that killed the winning node of run r20260831-0741 three times over.
+_WINDOWS_CRASH_CODES = {
+    0xC0000005: "ACCESS_VIOLATION",
+    0xC000001D: "ILLEGAL_INSTRUCTION",
+    0xC0000094: "INTEGER_DIVIDE_BY_ZERO",
+    0xC00000FD: "STACK_OVERFLOW",
+    0xC0000374: "HEAP_CORRUPTION",
+}
 TERM_GRACE_S = 3.0
 _TIME_POLL_S = 0.2
 _RSS_POLL_S = 1.0
@@ -152,6 +171,39 @@ def run(node: Node, *, split: str, seed: int,
                          kill_reason, wall_s, peak_rss_mb, header_columns)
 
 
+def _signal_number(exit_code: int) -> int | None:
+    """The signal behind an exit code: negative from `subprocess`, 128+n from a shell."""
+    if exit_code < 0:
+        return -exit_code
+    if 128 < exit_code < 192:
+        return exit_code - 128
+    return None
+
+
+def is_native_crash(exit_code: int) -> bool:
+    """Did the process die inside compiled code rather than raise a Python exception?"""
+    n = _signal_number(exit_code)
+    if n is not None:
+        return n in _NATIVE_SIGNALS
+    return exit_code in _WINDOWS_CRASH_CODES
+
+
+def describe_exit(exit_code: int) -> str:
+    """Human-readable cause of death, for a failure that left no traceback."""
+    n = _signal_number(exit_code)
+    if n is not None:
+        try:
+            return f"signal {n} ({signal.Signals(n).name})"
+        except ValueError:
+            return f"signal {n}"
+    if exit_code in _WINDOWS_CRASH_CODES:
+        return (
+            f"a Windows structured exception, 0x{exit_code:08X} "
+            f"({_WINDOWS_CRASH_CODES[exit_code]})"
+        )
+    return f"exit status {exit_code}"
+
+
 def classify(exit_code: int, stderr: str, stdout: str = "",
              kill_reason: str | None = None) -> ErrorClass:
     """Map a failed execution onto an ErrorClass. Pure, so it unit-tests cheaply."""
@@ -168,6 +220,12 @@ def classify(exit_code: int, stderr: str, stdout: str = "",
                  r"Unable to allocate .* for an array|numpy\.core\._exceptions\._ArrayMemoryError",
                  blob):
         return "oom"
+    # A fatal signal or Windows exception with no Python traceback is a native crash.
+    # It must not fall through to `runtime`: there is nothing to read, so the repair
+    # loop re-submits the identical program and gets the identical crash. That is
+    # exactly what cost run r20260831-0741 its submission — three attempts, one crash.
+    if is_native_crash(exit_code) and not _has_traceback(blob):
+        return "native_crash"
     if re.search(r"^\s*(SyntaxError|IndentationError|TabError):", blob, re.M):
         return "syntax"
     if re.search(r"^\s*(ModuleNotFoundError|ImportError):", blob, re.M):
@@ -183,6 +241,26 @@ def classify(exit_code: int, stderr: str, stdout: str = "",
     if _has_traceback(blob) or exit_code != 0:
         return "runtime"
     return "unknown"
+
+
+def native_crash_note(exit_code: int, peak_rss_mb: float) -> str:
+    """What to say when the process left no traceback for `excerpt()` to slice.
+
+    The bare "exited with status -11" this replaces gave the repair loop nothing to
+    act on, so it re-submitted the same program three times and got the same crash —
+    which is how run r20260831-0741 lost its submission with the best clean score in
+    the campaign. Name the mechanism and the levers, because there is no line number.
+    """
+    return (
+        f"the process was killed by {describe_exit(exit_code)} and printed no Python "
+        f"traceback. This is a native crash inside a compiled extension (LightGBM, "
+        f"XGBoost, NumPy or a BLAS), not a Python exception, so there is no line to "
+        f"fix and re-running the same code will crash in exactly the same place. Peak "
+        f"RSS was {peak_rss_mb:.0f} MB. The cause is usually native multithreading, an "
+        f"array handed to native code with the wrong dtype or layout, or a native "
+        f"library's own limit — so the fix is a different configuration, not a "
+        f"different line."
+    )
 
 
 def excerpt(stderr: str, *, limit: int = EXCERPT_CHARS,
@@ -307,6 +385,8 @@ def _build_result(ws: Path, returncode: int, stdout: str, stderr: str,
                            f"(peak RSS {peak_rss_mb:.0f} MB)")
     if returncode != 0:
         cls = classify(returncode, stderr, stdout, kill_reason)
+        if cls == "native_crash":
+            return fail(cls, native_crash_note(returncode, peak_rss_mb))
         return fail(cls, excerpt(stderr) or f"exited with status {returncode}")
 
     # exit 0 from here on: everything left is a contract or eval breach.

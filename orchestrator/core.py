@@ -380,6 +380,10 @@ class Orchestrator:
         self.probe_test_path = probe_test_path
         # node id -> "" when its --split test branch runs, else the failure text.
         self._test_path_status: dict[str, str] = {}
+        #: The probe's real error_class per node. A segfault on the test branch
+        #: is not a contract breach, and telling the repair prompt that it is
+        #: sends it looking for a missing header instead of a native crash.
+        self._test_path_class: dict[str, str] = {}
         self._iter_estimate_default = float(
             iter_estimate_s if iter_estimate_s is not None else cfg["iter_estimate_s"]
         )
@@ -590,8 +594,11 @@ class Orchestrator:
         #
         # So record it, tell the agent, and let the search keep the best model. The
         # broken branch is repaired at finalisation, where it actually matters.
-        ok_test, why = self._test_path_runs(node) if self.probe_test_path else (True, "")
+        ok_test, why, why_class = (
+            self._test_path_runs(node) if self.probe_test_path else (True, "", "")
+        )
         self._test_path_status[node.id] = "" if ok_test else why
+        self._test_path_class[node.id] = "" if ok_test else why_class
         if not ok_test:
             self.journal.emit(
                 {
@@ -624,7 +631,7 @@ class Orchestrator:
         )
         self._record_scored(node)
 
-    def _test_path_runs(self, node: Node) -> tuple[bool, str]:
+    def _test_path_runs(self, node: Node) -> tuple[bool, str, str]:
         """Execute the node's --split test branch just far enough to prove it runs.
 
         Deliberately tiny: a hard subsample and a short timeout, because this is asking
@@ -665,11 +672,16 @@ class Orchestrator:
                     "recovery": "probe_skipped",
                 }
             )
-            return True, ""  # inconclusive: do not punish the node for our own failure
+            # inconclusive: do not punish the node for our own failure
+            return True, "", ""
         self.acct.add_exec(res.wall_s)
         if res.ok:
-            return True, ""
-        return False, (res.error_excerpt or res.stderr_tail or "")[-600:]
+            return True, "", ""
+        return (
+            False,
+            (res.error_excerpt or res.stderr_tail or "")[-600:],
+            res.error_class or "",
+        )
 
     def _handle_failure(self, node: Node, error_class: str, excerpt: str) -> None:
         """Three repairs, then dead, then route around. This is the Robustness score."""
@@ -1201,7 +1213,9 @@ class Orchestrator:
             # build_context reads the error off the node, so stage it there.
             current.exec_result = ExecResult(
                 ok=False, exit_code=1, stdout_tail="", stderr_tail=why[-1500:],
-                error_class="contract",
+                # The probe's own class when it has one. Hardcoding "contract" told the
+                # model to go looking for a bad header when the process had segfaulted.
+                error_class=self._test_path_class.get(current.id) or "contract",
                 error_excerpt=(
                     "This scored well on validation, so the model is not in question. It "
                     "fails only under `--split test`, which trains on train plus "
@@ -1243,8 +1257,9 @@ class Orchestrator:
             fixed.metrics = dict(current.metrics or {})
             fixed.status = "ok"
 
-            ok, why2 = self._test_path_runs(fixed)
+            ok, why2, why2_class = self._test_path_runs(fixed)
             self._test_path_status[fixed.id] = "" if ok else why2
+            self._test_path_class[fixed.id] = "" if ok else why2_class
             self.journal.emit({
                 "event": "recovery", "iteration": self.iteration, "node_id": fixed.id,
                 "parent_id": current.id, "recovery": "test_path_repair",

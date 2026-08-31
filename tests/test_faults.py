@@ -125,6 +125,25 @@ class TestFaultTable:
         assert r.error_class == "oom", (r.error_excerpt, r.stderr_tail)
         assert r.peak_rss_mb > 0
 
+    def test_a_segfaulting_pipeline_is_classified_and_explained(self, make_node, data_dir):
+        """The real path: a subprocess that dies in C, with no traceback to read.
+
+        `excerpt()` has nothing to slice here, so `error_excerpt` is the only thing
+        the repair prompt receives. It has to name the cause and the levers, or the
+        repair loop resubmits the same program — which is how run r20260831-0741
+        lost the best clean score in the campaign.
+        """
+        r = sandbox.run(make_node("native_crash.py"), data_dir=data_dir, **FAST)
+        assert not r.ok
+        assert r.error_class == "native_crash", (r.exit_code, r.stderr_tail)
+        assert r.exit_code != 0
+        assert "training" in r.stdout_tail, "should have crashed mid-run, not at import"
+
+        note = r.error_excerpt or ""
+        assert "no Python traceback" in note
+        assert "configuration" in note
+        assert "exited with status" not in note, "the useless old message is back"
+
     def test_network_access_is_blocked(self, make_node, data_dir):
         """Downloading external data would breach the one disqualifying rule."""
         r = sandbox.run(make_node("network.py"), data_dir=data_dir, **FAST)
