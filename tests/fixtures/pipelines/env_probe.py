@@ -6,7 +6,7 @@ from _cli import args, write_submission
 
 def secret_shaped(name):
     return (name.endswith(("API_KEY", "TOKEN")) or "SECRET" in name or "PASSWORD" in name
-            or name.startswith(("ANTHROPIC_", "AWS_", "OPENAI_")))
+            or name.startswith(("ANTHROPIC_", "AWS_", "OPENAI_", "GEMINI_", "GOOGLE_")))
 
 
 a = args()
