@@ -27,6 +27,15 @@ _needs_openai = pytest.mark.skipif(
     reason="optional provider; `pip install openai` to run these",
 )
 
+# `make_client()` only reaches `import anthropic` once a key survives the shape check, so
+# most of TestProviderSelection runs without the SDK. The one test that asserts on the
+# constructed client cannot, and gating the class on `openai` alone made it fail on any
+# box with openai installed and anthropic not — which is most CI images.
+_needs_anthropic = pytest.mark.skipif(
+    importlib.util.find_spec("anthropic") is None,
+    reason="optional provider; `pip install anthropic` to run this",
+)
+
 TASK = TaskSpec(
     name="kuairand-pure", data_dir=Path("data"), metrics=("gauc", "ndcg@5"),
     baseline_val={"gauc": 0.6674, "ndcg@5": 0.5357, "primary": 0.6016},
@@ -548,6 +557,7 @@ class TestOpenAIAdapter:
 
 @_needs_openai
 class TestProviderSelection:
+    @_needs_anthropic
     def test_anthropic_key_wins_when_both_are_present(self, monkeypatch):
         monkeypatch.delenv("TECHJAM_LLM", raising=False)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x")
@@ -691,3 +701,260 @@ class TestTemperatureFallback:
         a.draft(ctx)
         assert sdk.calls[0]["temperature"] == agent_mod.TEMPERATURE["draft"]
         assert a.client.fixed_temperature_models() == set()
+
+
+# --------------------------------------------------------------------------- #
+# the offline loop
+#
+# The stub pipeline used to write fabricated ids (`row_id % 97`, `row_id % 313`) for a
+# fixed row count, which can align with no real evaluation split. Every stubbed run
+# therefore died on "submission failed validation: line 2 misaligned", three repairs and
+# a dead node — so the loop had never produced a scored node on real data, and nothing
+# downstream of the sandbox had ever been exercised end to end. These tests exist so that
+# cannot come back quietly.
+# --------------------------------------------------------------------------- #
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+KUAIRAND_DIR = REPO_ROOT / "data" / "KuaiRand-Pure" / "data"
+needs_kuairand = pytest.mark.skipif(
+    not (KUAIRAND_DIR / "log_standard_4_08_to_4_21_pure.csv").is_file(),
+    reason="needs the KuaiRand-Pure download; see the README for the curl line",
+)
+
+DEMO_TASK = TaskSpec(
+    name="demo", data_dir=Path("data"), metrics=("rmse",),
+    baseline_val={}, baseline_test={},
+    submission_columns=("row_id", "listing_id", "prediction"),
+    prediction_column="prediction",
+)
+
+
+def task_spec_for(cfg, **overrides):
+    """The `TaskSpec` run.py builds from a task file, without run.py's argparse."""
+    fields = {
+        "name": cfg.name, "data_dir": cfg.data.dir, "metrics": cfg.report_metrics,
+        "baseline_val": dict(cfg.baseline_val), "baseline_test": dict(cfg.baseline_test),
+        "ceiling": cfg.ceiling, "kind": cfg.kind, "description": cfg.description,
+        "primary_parts": cfg.primary_parts,
+        "submission_columns": cfg.submission_columns,
+        "prediction_column": cfg.prediction_column, "seed_std": cfg.seed_std,
+        "config": cfg,
+    }
+    fields.update(overrides)
+    return TaskSpec(**fields)
+
+
+def tiny_regression_task(tmp_path, name="stub-align"):
+    """A complete generic task on disk: config, data, and the TaskSpec the loop uses."""
+    import csv
+
+    from orchestrator import taskspec as ts
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"listing_id": i, "rooms": i % 5, "area": 30.0 + i, "rent": 500.0 + 12.5 * i}
+        for i in range(120)
+    ]
+    with open(tmp_path / "all.csv", "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["listing_id", "rooms", "area", "rent"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+    cfg = ts.parse_task({
+        "name": name,
+        "kind": "regression",
+        "description": "Predict rent from rooms and area.",
+        "data": {
+            "dir": str(tmp_path),
+            "file": "all.csv",
+            "target": "rent",
+            "id_columns": ["listing_id"],
+            "split": {"strategy": "random", "valid_frac": 0.2, "test_frac": 0.2, "seed": 0},
+        },
+        "submission": {"columns": ["row_id", "listing_id", "prediction"]},
+        "metrics": {"primary": ["rmse"], "report": ["rmse", "mae"]},
+    })
+    return cfg, task_spec_for(cfg, max_iters=2, wall_clock_s=300)
+
+
+def run_pipeline(code, workspace, data_dir, split, columns):
+    from orchestrator import sandbox
+
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "pipeline.py").write_text(code, encoding="utf-8")
+    return sandbox.run(
+        node(workspace=workspace), split=split, seed=0, timeout_s=180,
+        data_dir=Path(data_dir), mem_limit_mb=4096, header_columns=tuple(columns),
+    )
+
+
+class TestStubPipelineAlignment:
+    def test_it_aligns_with_a_generic_tabular_split(self, tmp_path):
+        from orchestrator import datasource as ds
+        from orchestrator import evaluate
+        from tests.stubs.agent import render_pipeline, spec_for
+
+        cfg, spec = tiny_regression_task(tmp_path / "data")
+        code = render_pipeline("align", spec=spec_for(spec))
+        imported = {
+            line.split()[1].split(".")[0]
+            for line in code.splitlines()
+            if line.startswith(("import ", "from "))
+        }
+        assert "orchestrator" not in imported, "a pipeline may not import from us"
+
+        for split in ("val", "test"):
+            result = run_pipeline(code, tmp_path / f"ws-{split}", ds.materialise(cfg),
+                                  split, cfg.submission_columns)
+            assert result.ok, (result.error_class, result.error_excerpt)
+            ok, message = evaluate.validate(result.artifacts["submission"], split, cfg)
+            assert ok, message
+
+    @needs_kuairand
+    def test_it_aligns_with_the_real_kuairand_splits(self, tmp_path):
+        """Row order here is `data.load()` order, not something that merely looks like
+        it: the validator compares (user_id, video_id) line by line, and 3.06% of test
+        rows are duplicate pairs, so only the true order survives."""
+        from orchestrator import evaluate
+        from orchestrator.taskspec import load_task
+        from tests.stubs.agent import render_pipeline, spec_for
+
+        cfg = load_task("kuairand-pure")
+        code = render_pipeline("align", spec=spec_for(task_spec_for(cfg)))
+
+        for split, expected in (("val", 124_909), ("test", 170_588)):
+            result = run_pipeline(code, tmp_path / f"ws-{split}", KUAIRAND_DIR, split,
+                                  cfg.submission_columns)
+            assert result.ok, (result.error_class, result.error_excerpt)
+            assert result.result_json["n_rows"] == expected
+            ok, message = evaluate.validate(result.artifacts["submission"], split, cfg)
+            assert ok, message
+
+
+def offline_run(tmp_path, agent, *, max_iters=2, run_id="roffline"):
+    """One real loop: canned proposals, but the real sandbox and the real evaluator."""
+    from dataclasses import replace
+
+    from orchestrator import evaluate, sandbox
+    from orchestrator import journal as journal_mod
+    from orchestrator.core import Orchestrator
+
+    cfg, spec = tiny_regression_task(tmp_path / "data", name=f"offline-{run_id}")
+    run_dir = tmp_path / run_id
+    journal_mod.close()
+    orch = Orchestrator(
+        replace(spec, max_iters=max_iters),
+        run_dir=run_dir, run_id=run_id, agent=agent,
+        executor=sandbox, evaluator=evaluate, mode="smoke", timeout_s=180,
+        journal=journal_mod.Journal(run_dir / "journal.jsonl", run_id, fsync=False),
+    )
+    summary = orch.run()
+    journal_mod.close()
+    return cfg, summary
+
+
+class TestOfflineLoopProducesAScoredNode:
+    """The acceptance test for this whole change: `--agent stub --sandbox auto
+    --evaluator auto` must end with a best node and a valid final submission."""
+
+    def test_two_iterations_score_and_finalise(self, tmp_path):
+        from orchestrator import evaluate
+        from tests.stubs import StubAgent
+
+        cfg, summary = offline_run(tmp_path, StubAgent())
+        assert summary["best_node"] is not None, summary
+        assert summary["best_metrics"] is not None
+        assert summary["final_valid"] is True
+        final = Path(summary["final_submission"])
+        assert final.is_file() and final.name == "submission.csv"
+        ok, message = evaluate.validate(final, "test", cfg)
+        assert ok, message
+
+    def test_the_replay_agent_drives_the_same_loop_with_no_key(self, tmp_path, monkeypatch):
+        for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "TECHJAM_LLM"):
+            monkeypatch.delenv(var, raising=False)
+        _cfg, summary = offline_run(tmp_path, agent_mod.ReplayAgent(),
+                                    max_iters=3, run_id="rreplay")
+        assert summary["best_node"] is not None, summary
+        assert summary["final_valid"] is True
+        assert summary["tokens_total"] == 0, "replay must not report spend it did not incur"
+
+
+class TestReplayAgent:
+    def serve(self, tmp_path, bodies):
+        for i, body in enumerate(bodies):
+            (tmp_path / f"{i:02d}_p.py").write_text(body, encoding="utf-8")
+        return agent_mod.ReplayAgent(directory=tmp_path)
+
+    def test_the_shipped_pipelines_parse_and_stay_task_agnostic(self):
+        for path in agent_mod.ReplayAgent().paths:
+            source = path.read_text(encoding="utf-8")
+            compile(source, str(path), "exec")
+            assert agent_mod.REPLAY_HEADER_TOKEN in source, f"{path.name} hardcodes a header"
+
+    def test_serves_each_file_once_then_wraps(self, ctx, tmp_path):
+        replay = self.serve(tmp_path, ['"""A."""\n', '"""B."""\n'])
+        served = [replay.draft(ctx).code, replay.improve(ctx, node()).code,
+                  replay.repair(ctx, node()).code]
+        assert served[0].startswith('"""A.')
+        assert served[1].startswith('"""B.')
+        assert served[2].startswith('"""A.'), "must wrap round rather than run out"
+        assert replay.calls == ["draft", "improve", "repair"]
+
+    def test_substitutes_the_tasks_submission_header(self, ctx, tmp_path):
+        replay = self.serve(
+            tmp_path, [f'"""Doc."""\nHEADER = "{agent_mod.REPLAY_HEADER_TOKEN}"\n'])
+        ctx.task = DEMO_TASK
+        code = replay.draft(ctx).code
+        assert 'HEADER = "row_id,listing_id,prediction"' in code
+        assert agent_mod.REPLAY_HEADER_TOKEN not in code
+
+    def test_reports_no_spend_and_carries_the_files_own_reasoning(self, ctx, tmp_path):
+        replay = self.serve(
+            tmp_path, ['"""Rank by popularity.\n\nBecause exposure is skewed."""\n'])
+        proposal = replay.draft(ctx)
+        assert proposal.tokens_in == 0 and proposal.tokens_out == 0
+        assert "Rank by popularity." in proposal.hypothesis
+        assert "Because exposure is skewed." in proposal.hypothesis
+        assert proposal.plan and proposal.model.startswith("replay-agent-v1:")
+
+    def test_an_empty_directory_is_a_loud_error(self, tmp_path):
+        with pytest.raises(AgentError, match="no canned pipelines"):
+            agent_mod.ReplayAgent(directory=tmp_path)
+
+    def test_get_agent_honours_the_replay_switch(self, monkeypatch):
+        monkeypatch.setattr(agent_mod, "_DEFAULT", None)
+        for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv(agent_mod.REPLAY_ENV, "replay")
+        assert isinstance(agent_mod.get_agent(), agent_mod.ReplayAgent)
+        monkeypatch.setattr(agent_mod, "_DEFAULT", None)
+
+
+class TestStubClientPipeline:
+    def test_it_reads_the_split_named_in_the_prompts_header(self, ctx, tmp_path):
+        """`StubClient` is handed a prompt, never a TaskSpec, so the submission header
+        has to be recovered from the prompt. Hardcoding KuaiRand's broke every other
+        task before the sandbox's structural check had even finished."""
+        from orchestrator import sandbox
+
+        ctx.task = DEMO_TASK
+        code = Agent(StubClient()).draft(ctx).code
+        assert "row_id,listing_id,prediction" in code
+
+        data = tmp_path / "data"
+        data.mkdir()
+        (data / "valid.csv").write_text("listing_id,area\n7,30\n8,40\n9,50\n",
+                                        encoding="utf-8")
+        ws = tmp_path / "n000"
+        ws.mkdir()
+        (ws / "pipeline.py").write_text(code, encoding="utf-8")
+        result = sandbox.run(
+            node(workspace=ws), split="val", seed=0, timeout_s=60, data_dir=data,
+            mem_limit_mb=1024, header_columns=("row_id", "listing_id", "prediction"),
+        )
+        assert result.ok, (result.error_class, result.error_excerpt)
+        assert result.result_json["n_rows"] == 3
+        rows = (ws / "submission.csv").read_text(encoding="utf-8").splitlines()
+        assert rows[0] == "row_id,listing_id,prediction"
+        assert [r.split(",")[1] for r in rows[1:]] == ["7", "8", "9"]

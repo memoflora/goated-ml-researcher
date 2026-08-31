@@ -1,50 +1,283 @@
-"""Canned pipeline emitted by the StubAgent. Self-contained, no imports from us.
+"""Canned pipeline emitted by the StubAgent. Self-contained: standard library only, and
+no import from `orchestrator/` — the pipeline contract is a file that runs on its own
+inside the sandbox, so it may not reach back into us.
 
 Honours the frozen CLI:
     python pipeline.py --data-dir DIR --out-dir DIR --split {val,test} --seed N [--subsample F]
 
-It does not train anything. It writes a schema-valid submission.csv with
-deterministic pseudo-scores so the orchestrator, the sandbox and the validator
-can all be exercised end to end without the real dataset.
+It trains nothing worth the name. What it *does* do is read the real evaluation split out
+of `--data-dir` and emit a submission that **aligns** with it: `row_id` 0-based and
+contiguous, and every id column carrying that split's own value for that row.
+
+The previous version wrote fabricated ids (`row_id % 97`, `row_id % 313`) against a fixed
+row count, so it could only ever validate against the stub evaluator. Against a real split
+it failed with `line 2 misaligned`, three repairs, then a dead node — which is why the
+orchestrator had never produced a scored node on real data. Alignment is not a detail of
+this file; it is the entire point of it.
+
+Two directory layouts are recognised, because the orchestrator hands the pipeline a
+different directory depending on the task:
+
+  * **starter-kit layout** — the raw KuaiRand-Pure directory. A split is a date filter
+    over the two standard log files, read in file order, exactly as
+    `vendor/starter_kit/data.py::load()` does it. That row order *is* the definition of
+    `row_id`, so it is reproduced here rather than approximated.
+  * **table layout** — one CSV per split (`train.csv` / `valid.csv` / `test.csv`), which
+    is what `datasource.materialise()` writes for every generic task. Original file order.
+
+The model is deliberately trivial (popularity for a ranking task, the train-set mean for a
+regression one). A stub that scored well would be a lie about what the agent did; a stub
+that cannot align is a bug that hides every other bug behind it.
 """
 
 import argparse
+import csv
+import hashlib
 import json
-import random
+import os
 import time
-from pathlib import Path
+from collections import Counter
 
 VARIANT = "__VARIANT__"
-N_ROWS = __N_ROWS__
+
+# Injected by tests/stubs/agent.py from the run's TaskSpec. Everything in here is
+# optional: what is absent is detected from the directory at runtime.
+SPEC = json.loads(r"""__SPEC_JSON__""")
+
+# The starter kit's own constants, used only when the task file did not supply them.
+KUAIRAND_LOGS = ("log_standard_4_08_to_4_21_pure.csv", "log_standard_4_22_to_5_08_pure.csv")
+KUAIRAND_RANGES = {
+    "train": [20220408, 20220421],
+    "valid": [20220422, 20220428],
+    "test": [20220429, 20220508],
+}
+
+# The CLI says `val`; the starter kit and the materialised files say `valid`.
+SPLIT_ALIASES = {"val": "valid", "valid": "valid", "train": "train", "test": "test"}
+
+COLUMNS = list(SPEC.get("columns") or ["row_id", "user_id", "video_id", "score"])
+PRED_COLUMN = SPEC.get("prediction_column") or COLUMNS[-1]
+ID_COLUMNS = [c for c in COLUMNS if c not in ("row_id", PRED_COLUMN)]
+
+csv.field_size_limit(1 << 20)
 
 
-def main() -> int:
+def normalise(split):
+    key = str(split).strip().lower()
+    if key not in SPLIT_ALIASES:
+        raise ValueError("unknown split %r; expected one of train/val/valid/test" % split)
+    return SPLIT_ALIASES[key]
+
+
+def pseudo_score(values, seed):
+    """A deterministic number in [0, 1) — stable across machines and runs.
+
+    `hash()` is randomised per process, so it would make the same pipeline score
+    differently on every seed. This does not.
+    """
+    blob = ("\x1f".join(values) + "\x1f" + str(seed)).encode("utf-8")
+    return int.from_bytes(hashlib.blake2b(blob, digest_size=8).digest(), "big") / 2.0**64
+
+
+# --------------------------------------------------------------------------- #
+# layout: the raw KuaiRand-Pure directory
+# --------------------------------------------------------------------------- #
+
+def kuairand_logs(data_dir):
+    names = SPEC.get("log_files") or KUAIRAND_LOGS
+    return [os.path.join(data_dir, n) for n in names]
+
+
+def is_starter_kit(data_dir):
+    return all(os.path.isfile(p) for p in kuairand_logs(data_dir))
+
+
+def read_starter_kit(data_dir, split):
+    """Rows of the split, in `data.load()` order: file order, then the date filter."""
+    ranges = SPEC.get("ranges") or KUAIRAND_RANGES
+    if split not in ranges:
+        raise KeyError("no date range for split %r; have %s" % (split, sorted(ranges)))
+    lo, hi = ranges[split]
+    date_column = SPEC.get("date_column") or "date"
+
+    rows = []
+    for path in kuairand_logs(data_dir):
+        with open(path, newline="", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            head = next(reader, None)
+            if head is None:
+                continue
+            try:
+                date_at = head.index(date_column)
+                id_at = [head.index(c) for c in ID_COLUMNS]
+            except ValueError as exc:
+                raise KeyError("%s: %s (columns: %s)" % (path, exc, head)) from None
+            for rec in reader:
+                if lo <= int(rec[date_at]) <= hi:
+                    rows.append([rec[i] for i in id_at])
+    return rows
+
+
+# --------------------------------------------------------------------------- #
+# layout: one materialised CSV per split
+# --------------------------------------------------------------------------- #
+
+def table_path(data_dir, split):
+    """`valid.csv`, falling back to `val.csv` — both spellings are in circulation."""
+    names = [split + ".csv"]
+    if split == "valid":
+        names.append("val.csv")
+    for name in names:
+        path = os.path.join(data_dir, name)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def read_table(path):
+    rows = []
+    with open(path, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        missing = [c for c in ID_COLUMNS if c not in (reader.fieldnames or [])]
+        if missing:
+            raise KeyError(
+                "%s has no column(s) %s; columns: %s"
+                % (path, ", ".join(missing), reader.fieldnames)
+            )
+        for rec in reader:
+            rows.append([str(rec[c]) for c in ID_COLUMNS])
+    return rows
+
+
+def header_of(path):
+    with open(path, newline="", encoding="utf-8") as fh:
+        return next(csv.reader(fh), []) or []
+
+
+def detect_target(data_dir):
+    """The target column, when the directory reveals it.
+
+    `materialise()` drops the target from `test.csv` and keeps it everywhere else, so the
+    column present in train and absent from test *is* the target. That means this works on
+    a task whose config the stub was never told about.
+    """
+    named = SPEC.get("target")
+    if named:
+        return named
+    train, test = table_path(data_dir, "train"), table_path(data_dir, "test")
+    if not train or not test:
+        return None
+    held_out = set(header_of(test))
+    extra = [c for c in header_of(train) if c not in held_out]
+    return extra[-1] if extra else None
+
+
+def train_target_mean(data_dir):
+    """Mean of the training target — the honest floor for a regression task."""
+    target = detect_target(data_dir)
+    train = table_path(data_dir, "train")
+    if not target or not train:
+        return None
+    total, n = 0.0, 0
+    with open(train, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        if target not in (reader.fieldnames or []):
+            return None
+        for rec in reader:
+            try:
+                total += float(rec[target])
+            except (TypeError, ValueError):
+                continue
+            n += 1
+    return total / n if n else None
+
+
+# --------------------------------------------------------------------------- #
+
+def predict(layout, rows, data_dir, seed):
+    """A trivial model, chosen to suit the layout. Never a good one."""
+    if layout == "starter_kit" and len(ID_COLUMNS) >= 2:
+        # Item popularity inside the evaluation split, ranked within each user. The
+        # sub-1.0 tie-break keeps the ordering total and deterministic without
+        # disturbing the popularity ordering itself.
+        item_at = len(ID_COLUMNS) - 1
+        counts = Counter(r[item_at] for r in rows)
+        return [counts[r[item_at]] + pseudo_score(r, seed) for r in rows], "item popularity"
+
+    mean = train_target_mean(data_dir)
+    if mean is not None:
+        return [mean] * len(rows), "constant train-set mean %.4f" % mean
+    return [pseudo_score(r, seed) for r in rows], "hashed constant-rank pseudo-score"
+
+
+def write_submission(out_dir, rows, preds):
+    path = os.path.join(out_dir, "submission.csv")
+    plan = []
+    for column in COLUMNS:
+        if column == "row_id":
+            plan.append(None)
+        elif column == PRED_COLUMN:
+            plan.append(-1)
+        else:
+            plan.append(ID_COLUMNS.index(column))
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh, lineterminator="\n")
+        writer.writerow(COLUMNS)
+        for row_id, (ids, pred) in enumerate(zip(rows, preds)):
+            writer.writerow(
+                [row_id if at is None else ("%.6f" % pred if at == -1 else ids[at])
+                 for at in plan]
+            )
+    return path
+
+
+def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", required=True)
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--split", choices=["val", "test"], required=True)
+    ap.add_argument("--split", choices=["val", "valid", "test"], required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--subsample", type=float, default=None)
     args = ap.parse_args()
 
     t0 = time.time()
-    rng = random.Random(args.seed)
-    out = Path(args.out_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    split = normalise(args.split)
+    data_dir = args.data_dir
+    os.makedirs(args.out_dir, exist_ok=True)
 
-    n = N_ROWS if args.subsample is None else max(10, int(N_ROWS * args.subsample))
-    with (out / "submission.csv").open("w", encoding="utf-8") as fh:
-        fh.write("row_id,user_id,video_id,score\n")
-        for row_id in range(n):
-            fh.write(f"{row_id},{row_id % 97},{row_id % 313},{rng.random():.6f}\n")
+    layout = SPEC.get("loader") or "auto"
+    if layout == "auto":
+        layout = "starter_kit" if is_starter_kit(data_dir) else "table"
+
+    if layout == "starter_kit":
+        rows = read_starter_kit(data_dir, split)
+    else:
+        path = table_path(data_dir, split)
+        if path is None:
+            raise FileNotFoundError(
+                "no %s split under %s; expected %s.csv, or the KuaiRand log files %s"
+                % (split, data_dir, split, ", ".join(KUAIRAND_LOGS))
+            )
+        rows = read_table(path)
+
+    if not rows:
+        raise ValueError("the %s split under %s is empty" % (split, data_dir))
+
+    # --subsample thins *training*, never the submission: every evaluation row must be
+    # scored or the file cannot align. This stub has no training to thin.
+    preds, model = predict(layout, rows, data_dir, args.seed)
+    write_submission(args.out_dir, rows, preds)
 
     print(
         "RESULT_JSON "
         + json.dumps(
             {
-                "n_rows": n,
+                "n_rows": len(rows),
                 "train_seconds": round(time.time() - t0, 3),
-                "notes": f"stub pipeline variant={VARIANT} split={args.split} seed={args.seed}",
+                "notes": (
+                    "stub pipeline variant=%s layout=%s split=%s seed=%s model=%s"
+                    % (VARIANT, layout, split, args.seed, model)
+                ),
             }
         )
     )
@@ -52,4 +285,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Anything that goes wrong is left to propagate: the sandbox classifies a pipeline by
+    # its traceback, and a `FileNotFoundError` reaching stderr intact is what makes a
+    # missing dataset come back as a `data` error rather than an anonymous `runtime` one.
     raise SystemExit(main())

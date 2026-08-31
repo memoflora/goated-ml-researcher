@@ -16,6 +16,7 @@ land, and they say so out loud.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -584,7 +585,9 @@ class StubClient:
                 "active users, so a popularity prior ranked within each user should "
                 "beat random ordering while the real agent is offline."),
             "plan": ["load the split", "score by item frequency", "write submission.csv"],
-            "code": _STUB_PIPELINE.replace("__TAG__", digest),
+            "code": (_STUB_PIPELINE
+                     .replace("__TAG__", digest)
+                     .replace("__HEADER__", _sniff_submission_header(kwargs))),
             "idea_ids": ["T0.item-popularity"],
         }
         block = type("ToolUse", (), {"type": "tool_use", "name": PROPOSAL_TOOL["name"],
@@ -595,9 +598,113 @@ class StubClient:
         return _StubMessage(content=[block], usage=usage)
 
 
+#: The submission header, stated verbatim in the system prompt, is the one piece of the
+#: task the stub client cannot invent. It used to hardcode KuaiRand's, which made every
+#: other task's stub run fail its structural check before it was ever scored.
+_HEADER_RE = re.compile(r"row_id(?:,[A-Za-z_]\w*)+")
+
+
+def _sniff_submission_header(kwargs: dict) -> str:
+    """Recover the task's submission header out of the prompt we were just handed.
+
+    `StubClient` sees a rendered prompt and nothing else — no `Context`, no `TaskSpec` —
+    but `prompts/system.md` states the header literally, so it is recoverable. Falls back
+    to KuaiRand's, which is what the old stub assumed unconditionally.
+    """
+    texts = [b.get("text", "") for b in (kwargs.get("system") or []) if isinstance(b, dict)]
+    for message in kwargs.get("messages") or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            texts.append(content)
+    for text in texts:
+        found = _HEADER_RE.search(text)
+        if found and found.group(0).count(",") >= 2:
+            return found.group(0)
+    return "row_id,user_id,video_id,score"
+
+
+# The stub's pipeline has to satisfy the *real* validator, not a friendly one. That means
+# reading the actual evaluation split and emitting rows in its order: `row_id` is a
+# position inside that split, and the id columns are checked against it line by line. The
+# previous version invented ids from `row_id % 97`, which aligns with nothing, so a stubbed
+# run reached "submission failed validation" on every node and never scored one.
 _STUB_PIPELINE = '''\
-"""Stub pipeline (__TAG__) — item popularity within user. Not the agent's work."""
-import argparse, collections, csv, json, os, time
+"""Stub pipeline (__TAG__) — reads the real split, ranks by item popularity.
+
+Not the agent's work: nothing is trained. The only thing this file takes seriously is
+alignment, because a misaligned submission is rejected before any model can be judged.
+
+Two directory layouts are recognised: the raw KuaiRand-Pure directory (a split is a date
+filter over the two standard logs, in file order) and one-CSV-per-split, which is what the
+orchestrator materialises for every other task.
+"""
+import argparse, collections, csv, hashlib, json, os, time
+
+COLUMNS = "__HEADER__".split(",")
+ID_COLUMNS = COLUMNS[1:-1]
+LOGS = ("log_standard_4_08_to_4_21_pure.csv", "log_standard_4_22_to_5_08_pure.csv")
+RANGES = {"train": (20220408, 20220421), "valid": (20220422, 20220428),
+          "test": (20220429, 20220508)}
+
+
+def jitter(values, seed):
+    """Deterministic tie-break in [0, 1). `hash()` is salted per process; this is not."""
+    blob = ("\\x1f".join(values) + "|" + str(seed)).encode("utf-8")
+    return int.from_bytes(hashlib.blake2b(blob, digest_size=8).digest(), "big") / 2.0 ** 64
+
+
+def header_of(path):
+    with open(path, newline="", encoding="utf-8") as fh:
+        return next(csv.reader(fh), []) or []
+
+
+def table_path(data_dir, split):
+    for name in ([split + ".csv"] + (["val.csv"] if split == "valid" else [])):
+        path = os.path.join(data_dir, name)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def read_logs(data_dir, split):
+    lo, hi = RANGES[split]
+    rows = []
+    for name in LOGS:
+        with open(os.path.join(data_dir, name), newline="", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            head = next(reader)
+            date_at = head.index("date")
+            id_at = [head.index(c) for c in ID_COLUMNS]
+            for rec in reader:
+                if lo <= int(rec[date_at]) <= hi:
+                    rows.append([rec[i] for i in id_at])
+    return rows
+
+
+def read_table(path):
+    with open(path, newline="", encoding="utf-8") as fh:
+        return [[str(rec[c]) for c in ID_COLUMNS] for rec in csv.DictReader(fh)]
+
+
+def train_target_mean(data_dir):
+    """The target is the column train.csv has and test.csv does not, by construction."""
+    train, test = table_path(data_dir, "train"), table_path(data_dir, "test")
+    if not train or not test:
+        return None
+    held_out = set(header_of(test))
+    extra = [c for c in header_of(train) if c not in held_out]
+    if not extra:
+        return None
+    column, total, n = extra[-1], 0.0, 0
+    with open(train, newline="", encoding="utf-8") as fh:
+        for rec in csv.DictReader(fh):
+            try:
+                total += float(rec[column])
+            except (TypeError, ValueError):
+                continue
+            n += 1
+    return total / n if n else None
+
 
 p = argparse.ArgumentParser()
 p.add_argument("--data-dir", required=True)
@@ -608,20 +715,35 @@ p.add_argument("--subsample", type=float, default=None)
 a = p.parse_args()
 
 t0 = time.time()
-rows = []
-path = os.path.join(a.data_dir, "%s.csv" % a.split)
-if os.path.isfile(path):
-    with open(path) as fh:
-        rows = list(csv.DictReader(fh))
-counts = collections.Counter(r.get("video_id") for r in rows)
-with open(os.path.join(a.out_dir, "submission.csv"), "w") as fh:
-    fh.write("row_id,user_id,video_id,score\\n")
-    for i, r in enumerate(rows):
-        fh.write("%d,%s,%s,%f\\n" % (i, r.get("user_id", "u"), r.get("video_id", "v"),
-                                     counts[r.get("video_id")]))
+split = {"val": "valid"}.get(a.split, a.split)
+os.makedirs(a.out_dir, exist_ok=True)
+
+if all(os.path.isfile(os.path.join(a.data_dir, n)) for n in LOGS):
+    rows, layout = read_logs(a.data_dir, split), "starter_kit"
+else:
+    path = table_path(a.data_dir, split)
+    if path is None:
+        raise FileNotFoundError("no %s split under %s" % (split, a.data_dir))
+    rows, layout = read_table(path), "table"
+
+if layout == "starter_kit" and len(ID_COLUMNS) >= 2:
+    counts = collections.Counter(r[-1] for r in rows)
+    preds = [counts[r[-1]] + jitter(r, a.seed) for r in rows]
+    model = "item popularity"
+else:
+    mean = train_target_mean(a.data_dir)
+    preds = [mean] * len(rows) if mean is not None else [jitter(r, a.seed) for r in rows]
+    model = "train-set mean" if mean is not None else "hashed pseudo-score"
+
+with open(os.path.join(a.out_dir, "submission.csv"), "w", newline="", encoding="utf-8") as fh:
+    w = csv.writer(fh, lineterminator="\\n")
+    w.writerow(COLUMNS)
+    for i, (ids, pred) in enumerate(zip(rows, preds)):
+        w.writerow([i] + ids + ["%.6f" % pred])
+
 print("RESULT_JSON " + json.dumps(
     {"n_rows": len(rows), "train_seconds": round(time.time() - t0, 3),
-     "notes": "stub item-popularity"}))
+     "notes": "stub %s, layout=%s, split=%s" % (model, layout, split)}))
 '''
 
 
@@ -906,6 +1028,120 @@ _FALLBACK_PROMPTS = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# ReplayAgent — the offline path
+# --------------------------------------------------------------------------- #
+
+#: Set to `replay` (or `scripted`) to make `get_agent()` serve canned pipelines.
+REPLAY_ENV = "TECHJAM_AGENT"
+#: Where the canned pipelines live. Override to replay a different trajectory.
+REPLAY_DIR_ENV = "TECHJAM_REPLAY_DIR"
+DEFAULT_REPLAY_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "replay"
+#: Each canned pipeline carries this token where the task's submission header belongs.
+REPLAY_HEADER_TOKEN = "__SUBMISSION_HEADER__"
+DEFAULT_SUBMISSION_HEADER = "row_id,user_id,video_id,score"
+
+
+def _replay_reasoning(code: str, name: str) -> tuple[str, list[str]]:
+    """Lift the hypothesis and plan out of a canned pipeline's own docstring.
+
+    The alternative is to caption the file from out here, which would put a sentence in
+    the journal that nobody had to keep true as the file changed.
+    """
+    try:
+        doc = (ast.get_docstring(ast.parse(code)) or "").strip()
+    except SyntaxError:
+        doc = ""
+    paragraphs = [p.strip().replace("\n", " ") for p in doc.split("\n\n") if p.strip()]
+    paragraphs = [p for p in paragraphs if not p.startswith("Served offline")]
+    if not paragraphs:
+        return f"Replayed {name}: a canned pipeline, served offline.", [f"run {name}"]
+    return " ".join(paragraphs), [
+        paragraphs[0],
+        "read the evaluation split in row_id order",
+        "write submission.csv and print RESULT_JSON",
+    ]
+
+
+class ReplayAgent:
+    """Serves canned pipeline files in sequence instead of calling a model.
+
+    Same seam as `Agent` — `draft(ctx)`, `improve(ctx, parent)`, `repair(ctx, node)` — so
+    the orchestrator cannot tell the difference, and everything downstream of the LLM call
+    runs for real: sandbox, validator, scorer, tree, journal, final submission. No key, no
+    network, no spend, and the same trajectory every time, which is what makes it usable as
+    a CI gate rather than only as a demo.
+
+    Each call consumes the next file, wrapping round at the end. A repair consumes one too:
+    offline there is no new information to repair *with*, so re-serving the file that just
+    failed would spend the node's three attempts on the same failure and teach us nothing.
+
+    The one thing substituted into each file is the task's submission header, which is the
+    single fact a canned pipeline cannot know and cannot guess. Everything else it works
+    out from the directory it is pointed at.
+    """
+
+    model = "replay-agent-v1"
+
+    def __init__(
+        self,
+        pipelines: list[Path | str] | None = None,
+        *,
+        directory: Path | str | None = None,
+    ) -> None:
+        if pipelines is not None:
+            self.paths = [Path(p) for p in pipelines]
+        else:
+            root = Path(directory or os.environ.get(REPLAY_DIR_ENV) or DEFAULT_REPLAY_DIR)
+            self.paths = sorted(p for p in root.glob("*.py") if not p.name.startswith("_"))
+            if not self.paths:
+                raise AgentError(
+                    f"no canned pipelines in {root}; set {REPLAY_DIR_ENV} to a directory "
+                    "of *.py pipelines, or pass them explicitly"
+                )
+        self.cursor = 0
+        self.calls: list[str] = []
+        self.total = Usage()
+
+    # -- seam ---------------------------------------------------------------
+
+    def draft(self, ctx: Context) -> Proposal:
+        return self._serve(ctx, "draft", "first program of the run")
+
+    def improve(self, ctx: Context, parent: Node) -> Proposal:
+        return self._serve(ctx, "improve", f"one step on from {parent.id}")
+
+    def repair(self, ctx: Context, node: Node) -> Proposal:
+        return self._serve(
+            ctx, "repair", f"{node.id} failed with error_class={ctx.error_class}"
+        )
+
+    # -- internals ----------------------------------------------------------
+
+    def _serve(self, ctx: Context, kind: str, note: str) -> Proposal:
+        path = self.paths[self.cursor % len(self.paths)]
+        self.cursor += 1
+        self.calls.append(kind)
+
+        columns = getattr(getattr(ctx, "task", None), "submission_columns", None)
+        header = ",".join(columns) if columns else DEFAULT_SUBMISSION_HEADER
+        code = path.read_text(encoding="utf-8").replace(REPLAY_HEADER_TOKEN, header)
+
+        hypothesis, plan = _replay_reasoning(code, path.name)
+        return Proposal(
+            hypothesis=(
+                f"{hypothesis}\n\n(Replayed offline from {path.name} — {note}. "
+                "No model was called and no tokens were spent.)"
+            ),
+            plan=plan,
+            code=code,
+            idea_ids=[i.id for i in (ctx.ideas or [])[:1]],
+            tokens_in=0,
+            tokens_out=0,
+            model=f"{self.model}:{path.stem}",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Module-level seam. OWNER: B — added by C to unblock the first real run.
 #
@@ -917,18 +1153,28 @@ _FALLBACK_PROMPTS = {
 # the LLM. These restore the frozen shape; `Agent` itself is unchanged.
 # ---------------------------------------------------------------------------
 
-_DEFAULT: Agent | None = None
+_DEFAULT: Agent | ReplayAgent | None = None
 
 
-def get_agent(**kwargs) -> Agent:
-    """The shared Agent, built on first use.
+def replay_requested() -> bool:
+    """Whether this process should run the canned agent instead of the real one."""
+    return os.environ.get(REPLAY_ENV, "").strip().lower() in {"replay", "scripted"}
+
+
+def get_agent(**kwargs) -> Agent | ReplayAgent:
+    """The shared agent, built on first use.
 
     Never at import time: run.py imports this module merely to probe the seam,
     and constructing a client needs an API key a stubbed smoke run does not have.
+
+    `TECHJAM_AGENT=replay` swaps in `ReplayAgent`, which is how the whole loop is
+    exercised end to end with no key and no spend. It is honoured here rather than in
+    run.py's `--agent` flag because this is the seam run.py resolves, so no other file
+    has to change to get the offline path.
     """
     global _DEFAULT
     if _DEFAULT is None or kwargs:
-        _DEFAULT = Agent(**kwargs)
+        _DEFAULT = ReplayAgent() if replay_requested() else Agent(**kwargs)
     return _DEFAULT
 
 
