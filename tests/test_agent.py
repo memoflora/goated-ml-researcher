@@ -1325,3 +1325,42 @@ class TestStubClientPipeline:
         rows = (ws / "submission.csv").read_text(encoding="utf-8").splitlines()
         assert rows[0] == "row_id,listing_id,prediction"
         assert [r.split(",")[1] for r in rows[1:]] == ["7", "8", "9"]
+
+
+class TestDotenvParsing:
+    """`.env` is how every real run gets its key and its provider, so a parsing quirk
+    here fails the run and blames something else. This suite exists because
+    `TECHJAM_LLM=openai   # primary provider` set the provider to the whole string and
+    reported it as an unknown provider."""
+
+    def _load(self, tmp_path, monkeypatch, body: str):
+        env = tmp_path / ".env"
+        env.write_text(body, encoding="utf-8")
+        for var in ("TECHJAM_LLM", "TECHJAM_MODEL", "SOME_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        agent_mod.load_dotenv(env)
+
+    def test_inline_comment_is_stripped(self, tmp_path, monkeypatch):
+        self._load(tmp_path, monkeypatch, "TECHJAM_LLM=openai   # primary provider\n")
+        assert os.environ["TECHJAM_LLM"] == "openai"
+
+    def test_a_hash_without_leading_space_is_part_of_the_value(self, tmp_path, monkeypatch):
+        # Passwords and tokens legitimately contain '#'; only a whitespace-preceded
+        # '#' starts a comment, which is what python-dotenv does.
+        self._load(tmp_path, monkeypatch, "SOME_KEY=abc#def\n")
+        assert os.environ["SOME_KEY"] == "abc#def"
+
+    def test_quoted_values_keep_their_hash(self, tmp_path, monkeypatch):
+        self._load(tmp_path, monkeypatch, 'SOME_KEY="abc # not a comment"\n')
+        assert os.environ["SOME_KEY"] == "abc # not a comment"
+
+    def test_existing_environment_still_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TECHJAM_MODEL", "already-set")
+        env = tmp_path / ".env"
+        env.write_text("TECHJAM_MODEL=from-file\n", encoding="utf-8")
+        agent_mod.load_dotenv(env)
+        assert os.environ["TECHJAM_MODEL"] == "already-set"
+
+    def test_export_prefix_and_blank_lines(self, tmp_path, monkeypatch):
+        self._load(tmp_path, monkeypatch, "\n# a comment\nexport TECHJAM_LLM=gemini\n\n")
+        assert os.environ["TECHJAM_LLM"] == "gemini"

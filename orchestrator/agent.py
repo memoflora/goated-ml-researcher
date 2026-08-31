@@ -475,6 +475,10 @@ def dotenv_candidates() -> list[Path]:
     return [root / ".env", root / "orchestrator" / ".env", Path.cwd() / ".env"]
 
 
+# An unquoted .env value ends at the first whitespace-preceded "#".
+_INLINE_COMMENT = re.compile(r"\s+#.*$")
+
+
 def load_dotenv(path: Path | None = None) -> Path | None:
     """Read `.env` into the environment without overriding what is already set.
     Returns the file it used, or None. Never logs a value.
@@ -489,15 +493,25 @@ def load_dotenv(path: Path | None = None) -> Path | None:
         found = next((c for c in dotenv_candidates() if c.is_file()), None)
     if found is None or not found.is_file():
         return None
-    for raw in found.read_text().splitlines():
+    for raw in found.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         line = line.removeprefix("export ").strip()
         name, sep, value = line.partition("=")
         name = name.strip()
-        if sep and name and name not in os.environ:
-            os.environ[name] = value.strip().strip('"').strip("'")
+        if not (sep and name) or name in os.environ:
+            continue
+        value = value.strip()
+        # Quoted values are taken literally; an unquoted one has a trailing comment
+        # stripped, matching python-dotenv. Without this, `TECHJAM_LLM=openai # primary`
+        # sets the provider to "openai # primary" and fails with an error that blames
+        # the provider name rather than the file — which is exactly how it failed here.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        else:
+            value = _INLINE_COMMENT.sub("", value).strip()
+        os.environ[name] = value
     return found
 
 
