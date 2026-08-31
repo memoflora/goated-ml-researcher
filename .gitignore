@@ -16,6 +16,13 @@ KuaiRand-Pure/
 *.csv
 !tests/fixtures/*.csv
 
+# Curated run artifacts under runs/examples/ are graded deliverables (problem statement
+# §2.5 items 3 run logs, 3b interventions, 4a the submission), so they are tracked even
+# though every other run output is ignored. The `*.csv` rule above would otherwise
+# swallow final/submission.csv, which IS deliverable 4a. Add a run with:
+#     python tools/archive_run.py runs/<run_id>
+!runs/examples/**/*.csv
+
 # python
 __pycache__/
 *.py[cod]

@@ -27,7 +27,7 @@ install: venv  ## install orchestrator + pipeline requirements
 	@echo "installed"
 
 lint:  ## ruff
-	@$(BIN)/ruff check orchestrator tests || $(PY) -m ruff check orchestrator tests
+	@$(BIN)/ruff check orchestrator tests tools || $(PY) -m ruff check orchestrator tests tools
 
 fmt:  ## ruff --fix
 	@$(BIN)/ruff check --fix orchestrator tests || $(PY) -m ruff check --fix orchestrator tests

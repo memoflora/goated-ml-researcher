@@ -6,13 +6,36 @@ From the problem statement, §2.5. Tick these before submitting.
 |---|---|---|---|
 | 1 | Written project description (Devpost) | `docs/devpost.md` | **draft — needs the final numbers** |
 | 2 | Public code / GitHub repository | this repo | done |
-| 3 | Run and iteration logs | `runs/<id>/journal.jsonl` | done |
-| 3b | **Number of manual interventions** | `runs/<id>/interventions.md` | **zero, every run** |
-| 4a | Final model output in the starter-kit schema | `runs/<id>/final/submission.csv` | done — 170,588 rows, validated |
+| 3 | Run and iteration logs | `runs/examples/<id>/journal.jsonl` | **NOT IN THE REPO — see below** |
+| 3b | **Number of manual interventions** | `runs/examples/<id>/interventions.md` | zero in every run, but **the file is not in the repo** |
+| 4a | Final model output in the starter-kit schema | `runs/examples/<id>/final/submission.csv` | produced (170,588 rows, validated) but **not in the repo** |
 | 4b | Results table: validation-best GAUC / nDCG@5 + **absolute delta over baseline** | `01-results.md`, `RESULTS.md` | **pending the gpt-5.1 run** |
-| 4c | **Resource usage**: total tokens in+out, agent wall-clock, iterations used of 50 | `runs/<id>/summary.json` | done, per run |
+| 4c | **Resource usage**: total tokens in+out, agent wall-clock, iterations used of 50 | `runs/examples/<id>/summary.json` | measured per run; **file not in the repo** |
 | 4d | GPU-hours, if any GPU used | **none — CPU only** | n/a |
 | — | Bonus: KuaiRand-1k / 27k | not attempted | n/a, does not reduce the Pure score |
+
+## The gap that blocks 3, 3b, 4a and 4c
+
+`runs/` is gitignored, so **none of these four are in the public repository**, and the
+runs they refer to (`r20260831-0724`, `r20260831-0741`) were made on a Windows machine
+and exist on no other. Deliverable 2 is a *public* repository; a path a reviewer cannot
+open does not satisfy 3.
+
+Whoever has those run directories fixes it in two commands:
+
+```bash
+python tools/archive_run.py runs/r20260831-0724     # carries deliverable 4a
+python tools/archive_run.py runs/r20260831-0741     # the best clean score
+git add runs/examples && git commit
+```
+
+`runs/examples/` is exempted from the ignore rules, including the `*.csv` rule that
+would otherwise swallow `final/submission.csv` — which *is* deliverable 4a. The script
+skips the per-node submissions that would make the commit hundreds of megabytes. See
+`runs/examples/README.md`.
+
+This also unblocks the `TODO`s in `docs/devpost.md`: the agent-hypothesis quotes can
+only come from `journal.jsonl`, so nobody without those directories can fill them in.
 
 ## What to paste for 4c
 
@@ -61,10 +84,14 @@ own agent tried twice to break it.
 
 ## Before you submit
 
-1. Read `docs/handover/01-results.md` and use only numbers marked trustworthy. **0.6189 and
+1. **Archive the cited runs into `runs/examples/` and commit them** (see above). Until
+   that is done, deliverables 3, 3b, 4a and 4c are not in the repository at all, and the
+   devpost quotes cannot be filled in.
+2. Read `docs/handover/01-results.md` and use only numbers marked trustworthy. **0.6189 and
    0.8484 are both leaked and must not appear as results.**
-2. Fill the final numbers into `docs/devpost.md` from `runs/r20260831-0741/summary.json`.
-3. The agent-hypothesis quotes in `docs/devpost.md` are marked `TODO`; pull them verbatim from
+3. Fill the final numbers into `docs/devpost.md` from
+   `runs/examples/r20260831-0741/summary.json`.
+4. The agent-hypothesis quotes in `docs/devpost.md` are marked `TODO`; pull them verbatim from
    the winning run's journal (`event: "proposal"`, field `hypothesis`). Do not paraphrase —
    Innovation is scored on what the agent chose to try and why, and its own words are the
    evidence.
