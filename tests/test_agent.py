@@ -469,12 +469,53 @@ class FakeOpenAICompletion:
         self.usage = usage
 
 
+class FakeResponsesUsage:
+    def __init__(self, input_tokens, output_tokens, cached=0):
+        self.input_tokens, self.output_tokens = input_tokens, output_tokens
+        self.input_tokens_details = type("D", (), {"cached_tokens": cached})()
+
+
+class FakeResponse:
+    """The /v1/responses shape: a flat `output` list, never `choices`.
+
+    A reasoning item is emitted before the call, as the real endpoint does — that is
+    the whole reason for moving here, and the parser has to step over it.
+    """
+
+    def __init__(self, arguments, usage, name="submit_pipeline"):
+        self.output = []
+        if arguments is not None:
+            self.output.append(type("R", (), {"type": "reasoning", "summary": []})())
+            self.output.append(type("FC", (), {
+                "type": "function_call", "name": name, "arguments": arguments})())
+        self.usage = usage
+
+
+class _FakeResponsesEndpoint:
+    """`sdk.responses.create(...)`, recorded separately from chat.completions."""
+
+    def __init__(self, sdk):
+        self._sdk = sdk
+
+    def create(self, **kwargs):
+        self._sdk.responses_calls.append(kwargs)
+        item = self._sdk.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
 class FakeOpenAISDK:
     """Stands in for openai.OpenAI(). Records what the adapter sent."""
 
     def __init__(self, script):
         self.script = list(script)
         self.calls = []
+        self.responses_calls = []
+
+    @property
+    def responses(self):
+        return _FakeResponsesEndpoint(self)
 
     @property
     def chat(self):
@@ -725,6 +766,92 @@ class TestTemperatureFallback:
         a.draft(ctx)
         assert sdk.calls[0]["temperature"] == agent_mod.TEMPERATURE["draft"]
         assert a.client.fixed_temperature_models() == set()
+
+
+class TestResponsesApiFallback:
+    """gpt-5.6-class models refuse function tools + reasoning on chat.completions.
+
+    The API offers two ways out and they are not equivalent: `reasoning_effort="none"`
+    clears the 400 by switching off the reasoning this agent exists to use. Moving the
+    model to /v1/responses keeps both. A live gpt-5.6-terra dev run made 0 LLM calls
+    across 8 iterations before this existed, and still exited 0.
+    """
+
+    class Reasoning400(Exception):
+        status_code = 400
+
+        def __str__(self):
+            return ("Function tools with reasoning_effort are not supported for "
+                    "gpt-5.6-terra in /v1/chat/completions. To use function tools, "
+                    "use /v1/responses or set reasoning_effort to 'none'.")
+
+    def response(self, **usage_kw):
+        return FakeResponse(
+            json.dumps(GOOD_PAYLOAD),
+            FakeResponsesUsage(**{"input_tokens": 900, "output_tokens": 100, **usage_kw}),
+        )
+
+    def test_it_moves_to_the_responses_api_and_succeeds(self, ctx):
+        a, sdk = openai_agent([self.Reasoning400(), self.response()])
+        assert a.draft(ctx).hypothesis.startswith("Active users dominate")
+        assert len(sdk.calls) == 1, "one rejected chat.completions attempt"
+        assert len(sdk.responses_calls) == 1, "then the same call on /v1/responses"
+
+    def test_reasoning_is_kept_rather_than_switched_off(self, ctx):
+        """The point of the endpoint move. Setting it to 'none' would also pass."""
+        a, sdk = openai_agent([self.Reasoning400(), self.response()])
+        a.draft(ctx)
+        assert sdk.responses_calls[0].get("reasoning_effort") != "none"
+        assert all(c.get("reasoning_effort") != "none" for c in sdk.calls)
+
+    def test_the_lesson_is_remembered_per_model(self, ctx):
+        """Paying the 400 once a run is fine; paying it on all 50 iterations is not."""
+        a, sdk = openai_agent([self.Reasoning400(), self.response(), self.response()])
+        a.draft(ctx)
+        ctx.parent_code = "print(1)\n"
+        a.improve(ctx, node())
+        assert len(sdk.calls) == 1, "the second call must skip chat.completions entirely"
+        assert len(sdk.responses_calls) == 2
+        assert a.client.responses_api_models() == {"test-model"}
+
+    def test_the_tool_is_sent_flat_not_nested(self, ctx):
+        a, sdk = openai_agent([self.Reasoning400(), self.response()])
+        a.draft(ctx)
+        tool = sdk.responses_calls[0]["tools"][0]
+        assert tool["name"] == "submit_pipeline", "responses puts name at the top level"
+        assert "function" not in tool, "that nesting is the chat.completions shape"
+        assert "strict" not in tool, (
+            "strict requires additionalProperties:false and every property required; "
+            "PROPOSAL_TOOL declares neither, so it would trade one 400 for another"
+        )
+
+    def test_the_system_prompt_becomes_instructions(self, ctx):
+        a, sdk = openai_agent([self.Reasoning400(), self.response()])
+        a.draft(ctx)
+        call = sdk.responses_calls[0]
+        assert "kuairand-pure" in call["instructions"]
+        assert "cache_control" not in json.dumps(call, default=str)
+
+    def test_cached_tokens_are_not_double_counted(self, ctx):
+        """`input_tokens` includes cached reads here too, exactly as prompt_tokens does."""
+        a, _ = openai_agent([self.Reasoning400(),
+                             self.response(input_tokens=1000, cached=800)])
+        p = a.draft(ctx)
+        assert p.tokens_in == 1000
+        assert a.total.cache_read_input_tokens == 800
+        assert a.total.input_tokens == 200
+
+    def test_reasoning_output_tokens_are_still_billed(self, ctx):
+        """They are real spend and Feasibility is scored on tokens."""
+        a, _ = openai_agent([self.Reasoning400(),
+                             self.response(output_tokens=4321)])
+        assert a.draft(ctx).tokens_out == 4321
+
+    def test_other_400s_are_not_swallowed(self, ctx):
+        a, sdk = openai_agent([TestTemperatureFallback.Other400(), self.response()])
+        with pytest.raises(AgentError):
+            a.draft(ctx)
+        assert sdk.responses_calls == [], "only a reasoning 400 moves endpoint"
 
 
 # --------------------------------------------------------------------------- #

@@ -768,6 +768,7 @@ class OpenAIClient:
     def __init__(self, client):
         self._client = client
         self._no_temperature: set[str] = set()
+        self._use_responses: set[str] = set()
 
     @property
     def messages(self):
@@ -775,6 +776,11 @@ class OpenAIClient:
 
     def create(self, *, model, max_tokens, temperature, system, messages,
                tools, tool_choice, **_ignored):
+        # Already learned that this model needs /v1/responses: go straight there
+        # rather than paying the same rejected chat.completions call every iteration.
+        if model in self._use_responses:
+            return self._via_responses(model, max_tokens, system, messages,
+                                       tools, tool_choice)
         kwargs = {
             "model": model,
             "max_completion_tokens": max_tokens,
@@ -788,6 +794,17 @@ class OpenAIClient:
         try:
             completion = self._client.chat.completions.create(**kwargs)
         except Exception as exc:                       # noqa: BLE001 - re-raised below
+            if _requires_responses_api(exc):
+                # Newer reasoning models refuse function tools on /v1/chat/completions
+                # unless reasoning is switched off. The API offers both ways out and
+                # they are not equivalent: `reasoning_effort="none"` would work here
+                # and would lobotomise the one faculty this agent exists to use, so
+                # move the model to /v1/responses, which supports tools *and*
+                # reasoning. Learned once per model, exactly like temperature below.
+                self._use_responses.add(model)
+                return self._via_responses(
+                    model, max_tokens, system, messages, tools, tool_choice
+                )
             if not _rejects_temperature(exc) or "temperature" not in kwargs:
                 raise
             # Reasoning models accept only the default temperature. Learn it once,
@@ -801,6 +818,34 @@ class OpenAIClient:
             content=_as_tool_use_blocks(completion),
             usage=_as_anthropic_usage(completion.usage),
         )
+
+    def _via_responses(self, model, max_tokens, system, messages, tools, tool_choice):
+        """The same call against /v1/responses, in the Anthropic shape the caller wants.
+
+        Deliberately not `strict`: strict function tools require every property to be
+        required and `additionalProperties: false`, and PROPOSAL_TOOL declares neither.
+        Turning it on would trade a 400 about reasoning for a 400 about the schema.
+        """
+        resp = self._client.responses.create(
+            model=model,
+            instructions=_flatten_system(system),
+            input=[
+                {"role": m.get("role", "user"), "content": _responses_text(m.get("content"))}
+                for m in messages
+            ],
+            tools=[_as_responses_tool(t) for t in tools],
+            tool_choice={"type": "function", "name": tool_choice["name"]},
+            max_output_tokens=max_tokens,
+        )
+        return _AdaptedMessage(
+            content=_as_tool_use_blocks_responses(resp),
+            usage=_as_anthropic_usage_responses(resp.usage),
+        )
+
+    def responses_api_models(self) -> set[str]:
+        """Models moved to /v1/responses. Journalled for the same reason the
+        fixed-temperature set is: it changes how the call was actually made."""
+        return set(self._use_responses)
 
     def fixed_temperature_models(self) -> set[str]:
         """Models found to reject a custom temperature. Worth journalling: it means
@@ -834,6 +879,67 @@ def _rejects_temperature(exc: Exception) -> bool:
     if getattr(exc, "status_code", None) != 400:
         return False
     return "temperature" in str(exc).lower()
+
+
+def _requires_responses_api(exc: Exception) -> bool:
+    """A 400 saying this model needs /v1/responses to combine tools with reasoning.
+
+    The message names the endpoint *and* `reasoning_effort`; either is enough to
+    identify it, and neither appears in an ordinary bad-request about our payload.
+    """
+    if getattr(exc, "status_code", None) != 400:
+        return False
+    text = str(exc).lower()
+    return "/v1/responses" in text or "reasoning_effort" in text
+
+
+def _responses_text(content) -> str:
+    """Our messages carry a plain string; tolerate the block form regardless."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n\n".join(
+            b.get("text", "") if isinstance(b, dict) else str(b) for b in content
+        )
+    return str(content or "")
+
+
+def _as_responses_tool(tool: dict) -> dict:
+    """Responses puts name/description/parameters flat, not nested under `function`."""
+    return {"type": "function", "name": tool["name"],
+            "description": tool["description"], "parameters": tool["input_schema"]}
+
+
+def _as_tool_use_blocks_responses(resp) -> list:
+    """Returns [] when the model reasoned but emitted no call, which the caller retries."""
+    for item in getattr(resp, "output", None) or []:
+        if getattr(item, "type", None) != "function_call":
+            continue
+        try:
+            payload = json.loads(item.arguments)
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            return [_ToolUseBlock(name=item.name, input=payload)]
+    return []
+
+
+def _as_anthropic_usage_responses(usage) -> Usage:
+    """`input_tokens` includes cached reads, as on chat completions, so subtract them.
+
+    `output_tokens` includes reasoning tokens, which is what we want: they are billed
+    and they are the cost of the reasoning we moved to this endpoint to keep.
+    """
+    total_in = int(getattr(usage, "input_tokens", 0) or 0)
+    details = getattr(usage, "input_tokens_details", None)
+    cached = int(getattr(details, "cached_tokens", 0) or 0)
+    return Usage(
+        input_tokens=total_in - cached,
+        output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=cached,
+        calls=1,
+    )
 
 
 def _as_openai_tool(tool: dict) -> dict:
