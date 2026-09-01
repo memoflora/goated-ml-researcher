@@ -41,6 +41,7 @@ TOP_LEVEL = (
     "state.json",
     "interventions.md",
     "RESULTS.md",
+    "RUNLOG.md",
     "trajectory.png",
 )
 

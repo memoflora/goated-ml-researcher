@@ -234,10 +234,61 @@ instructs** — no hyperparameters, no "try gradient boosting". What to try is t
 | [reference/README.md](reference/README.md) | The BPR-FM calibration experiment |
 | [`.claude/skills/techjam-track2/`](.claude/skills/techjam-track2) | Problem digest, frozen contracts, starter-kit findings, per-role briefs |
 
-Team: two ML engineers own the machine (`core`/`policy`/`journal`/`run`, and
-`agent`/`sandbox`/CI); two ML researchers own what it knows (`evaluate`/`metrics`/`datacard`,
-and `ideas.yaml`/`prompts`/`docs`). Ownership is per file — B owns the prompt plumbing, D owns
-the prompt text. Start a session with `/techjam-track2 <A|B|C|D>`.
+## Team member contributions
+
+Four contributors, ownership assigned **per file** so two people never edit the same module.
+The split is between the machine and what the machine knows.
+
+| Role | Owns | Contribution |
+|---|---|---|
+| **A** — ML engineer | `core.py`, `policy.py`, `journal.py`, `run.py` | The orchestration loop, the search policy, the append-only journal, the CLI, checkpoint/resume |
+| **B** — ML engineer | `agent.py`, `sandbox.py`, CI | LLM providers and failover, the process-isolating sandbox, the fault-injection suite, GitHub Actions |
+| **C** — ML researcher | `evaluate.py`, `metrics.py`, `datacard.py`, `taskspec.py`, `masking.py` | GAUC/nDCG@5 and the benchmark-ladder reproduction, the data card, the task-agnostic layer, the leakage mask |
+| **D** — ML researcher | `ideas.yaml`, `prompts/`, `docs/` | The idea bank and its dead ends, every prompt's text, the writeup |
+
+The boundary is finer than it looks: **B owns the prompt plumbing, D owns the prompt text.**
+Sessions start with `/techjam-track2 <A|B|C|D>`, which loads that role's scope and the frozen
+cross-team contracts.
+
+## Limitations, and what we would do with more time
+
+Written against what we measured, not what we hoped.
+
+**The agent has not beaten the official baseline on a leak-free harness.** Our best defensible
+result is validation primary 0.5918 against the baseline's 0.6016 — short by 0.0098. Every
+number we produced that *exceeded* the baseline turned out to be label leakage, which we found
+and withdrew. The honest position is that we built a system that researches autonomously and
+have not yet shown it out-researching a well-tuned baseline.
+
+**Our best score and our best artifact are from different runs.** The 0.5918 run crashed
+during finalisation with a native LightGBM segfault and produced no submission; the run that
+did produce a valid 170,588-row submission scored 0.5806. We have since given the repair loop
+a real diagnosis for native crashes instead of `exited with status -11`, but no run has yet
+demonstrated both halves at once.
+
+**Single runs, unmeasured variance.** Every headline is one run at temperature 1.0. With a
+seed noise of 0.0008 measured on the baseline, we cannot presently distinguish a 0.002
+improvement from luck, and we have not had the wall-clock to run each configuration three
+times.
+
+**Validation only.** We have never scored the hidden test set. That is deliberate and
+mechanically enforced, but it means our numbers are an upper bound on what a leaderboard
+would show.
+
+Given more time, in the order we would actually do it:
+
+1. **Spend the budget the search now has.** Our best run converged at iteration 13 of 50 on
+   6% of its token budget, because convergence fired on the exact iteration the explore
+   branch became reachable. That is fixed; it has not yet been exercised on a full run.
+2. **Take the pairwise-ranking direction properly.** It is the organisers' own top-ranked
+   untested idea, our hand-written control beat the baseline with it (+0.0016), and we
+   measured that pair-sampling weight decides the *sign* of the result. The agent has never
+   had enough iterations to work it.
+3. **Run each configuration three times** and report a mean and spread rather than a single
+   number.
+4. **Close the native-crash class properly** — reproduce the LightGBM segfault at full data
+   size and fix the cause, rather than teaching the repair loop to work around it.
+5. **Attempt the bonus benchmarks** (KuaiRand-1k / 27k), which we did not touch.
 
 ## The two rules that can lose us everything
 

@@ -82,7 +82,7 @@ a key or a budget.
 
 ## Test suite
 
-362 tests, lint clean. The ones worth knowing about:
+425 tests, lint clean. The ones worth knowing about:
 
 - the loop scores a real pipeline on real data and lands a valid final submission
 - item popularity reproduces to 0.58072 and the FM baseline to 0.6015 **through our own

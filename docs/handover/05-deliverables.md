@@ -1,18 +1,58 @@
 # Required deliverables, mapped to artifacts
 
-From the problem statement, §2.5. Tick these before submitting.
+Every requirement the organisers list, mapped to the artifact that satisfies it. Tick
+these before submitting.
 
-| # | Required | Where it is | Status |
-|---|---|---|---|
-| 1 | Written project description (Devpost) | `docs/devpost.md` | **draft — needs the final numbers** |
-| 2 | Public code / GitHub repository | this repo | done |
-| 3 | Run and iteration logs | `runs/examples/<id>/journal.jsonl` | **NOT IN THE REPO — see below** |
-| 3b | **Number of manual interventions** | `runs/examples/<id>/interventions.md` | zero in every run, but **the file is not in the repo** |
-| 4a | Final model output in the starter-kit schema | `runs/examples/<id>/final/submission.csv` | produced (170,588 rows, validated) but **not in the repo** |
-| 4b | Results table: validation-best GAUC / nDCG@5 + **absolute delta over baseline** | `01-results.md`, `RESULTS.md` | **pending the gpt-5.1 run** |
-| 4c | **Resource usage**: total tokens in+out, agent wall-clock, iterations used of 50 | `runs/examples/<id>/summary.json` | measured per run; **file not in the repo** |
-| 4d | GPU-hours, if any GPU used | **none — CPU only** | n/a |
-| — | Bonus: KuaiRand-1k / 27k | not attempted | n/a, does not reduce the Pure score |
+## 1 · Written project description (Devpost)
+
+| Required | Where it is | Status |
+|---|---|---|
+| How the solution addresses the problem statement | `docs/devpost.md` — "What it is", "The loop" | done |
+| **Development tools** (VSCode, Colab, Jupyter…) | `docs/devpost.md` — "Built with → Development tools" | done |
+| **APIs used** | "Built with → APIs used" — OpenAI (gpt-5.6-terra / 5.1 / 4o), Anthropic, Gemini fallback | done |
+| **Libraries and frameworks** | "Built with → Libraries and frameworks" — split into orchestrator deps and the sandbox whitelist | done |
+| **Datasets and assets** | "Built with → Datasets and assets" — KuaiRand-Pure, the vendored starter kit, a synthetic fixture | done |
+| Final numbers and agent-hypothesis quotes | `docs/devpost.md` | **TODO — needs the run** |
+
+## 2 · Public code / GitHub repository
+
+| Required | Where it is | Status |
+|---|---|---|
+| Well-structured, commented code, all components | `orchestrator/` (~8k lines), 425 tests, ruff clean | done |
+| README: project overview | `README.md` — top, "Where we stand" | done |
+| README: setup and installation | `README.md` — "Quickstart", "Running it for real" | done |
+| README: steps to reproduce results | `README.md` — "Quickstart" (no key needed) and "Running it for real" | done |
+| README: **limitations and what you would improve** | `README.md` — "Limitations, and what we would do with more time" | done |
+| README: **team member contributions** | `README.md` — "Team member contributions" (per-file ownership table) | done |
+
+## 3 · Run and iteration logs
+
+The Starter Kit asks for four things **per iteration**. Three come from the journal; the
+code diff exists nowhere until `orchestrator/runlog.py` reconstructs it from the node
+workspaces, because the journal deliberately never stores code.
+
+```bash
+python -m orchestrator.runlog runs/<run_id>     # writes RUNLOG.md
+```
+
+| Required | Where it is | Status |
+|---|---|---|
+| Hypothesis — what the agent intended and why | `RUNLOG.md`, from journal `proposal.hypothesis` | done |
+| **The code diff applied** | `RUNLOG.md`, diffed from `nodes/<id>/pipeline.py` vs its parent | done |
+| Resulting metrics (GAUC / nDCG@5) | `RUNLOG.md`, from journal `eval.metrics`, with delta vs baseline | done |
+| Errors and recovery events, and how they were handled | `RUNLOG.md`, from journal `error` / `recovery` | done |
+| **Manual-intervention count** | `RUNLOG.md` header, counted from `interventions.md` table rows | done |
+| The raw log itself | `runs/<id>/journal.jsonl` | **not in the repo — see below** |
+
+## 4 · Final submission and results summary
+
+| Required | Where it is | Status |
+|---|---|---|
+| Final model output, starter-kit schema | `runs/<id>/final/submission.csv` — 170,588 rows, validated | produced; **not in the repo** |
+| Results table: validation-best GAUC / nDCG@5 **+ absolute delta over baseline** | `RESULTS.md` via `orchestrator.report`; `01-results.md` | done |
+| Resource usage: total tokens (in+out), agent wall-clock, iterations of 50 | `runs/<id>/summary.json` | done, per run |
+| GPU-hours | **zero — every run was CPU-only** | n/a |
+| Bonus: KuaiRand-1k / 27k | not attempted | n/a, does not reduce the Pure score |
 
 ## The gap that blocks 3, 3b, 4a and 4c
 

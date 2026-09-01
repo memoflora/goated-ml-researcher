@@ -58,6 +58,9 @@ official:  ## the scored run: 50 iterations / 6 h, unattended
 models:  ## list model ids the configured key can reach
 	@$(BIN)/python -m orchestrator.models || $(PY) -m orchestrator.models
 
+runlog:  ## per-iteration run log with code diffs: make runlog RUN=runs/<id>
+	@$(PY) -m orchestrator.runlog $(RUN)
+
 report:  ## regenerate RESULTS.md + trajectory PNG from a run's journal
 	@test -n "$(RUN)" || (echo "usage: make report RUN=<run_id>"; exit 1)
 	@$(PY) -m orchestrator.report --run $(RUN)

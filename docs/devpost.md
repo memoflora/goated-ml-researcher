@@ -303,9 +303,71 @@ python -m orchestrator.run --task demo-regression --mode smoke
 
 ## Built with
 
-Python 3.11 · numpy · pandas · PyTorch · LightGBM (pipeline whitelist) · Anthropic and OpenAI
-APIs behind one interface · pytest with a fault-injection suite · GitHub Actions running lint,
-281 tests and a stubbed end-to-end run on every push.
+Two dependency sets, kept deliberately apart. `requirements.txt` is what the **orchestrator**
+needs; `requirements-pipeline.txt` is the whitelist the **agent-written pipeline** may import
+inside the sandbox. An import outside that whitelist is an `ErrorClass: import` the agent has
+to repair, which is why the two lists are separate files rather than one.
+
+### Development tools
+
+- **VS Code** — primary editor
+- **Claude Code** (Anthropic) — used as a pair-programming agent on the harness itself
+- **git / GitHub** — `main` is the submitted tree; every fix landed as its own commit
+- **GNU Make** — `make check` (lint + tests + a stubbed end-to-end run) is the merge gate
+- **pytest 8.3.4** — 425 tests, including a fault-injection suite that SIGKILLs real
+  subprocesses and asserts none of them survive
+- **ruff 0.9.6** — lint, run over `orchestrator/`, `tests/` and `tools/`
+- **GitHub Actions** — Ubuntu, Python 3.11, running lint, the full test suite and a stubbed
+  end-to-end run on every push, with no API key and no dataset
+
+No notebooks. Every result in this writeup comes from a scripted run that regenerates from
+its own run directory, because a number produced in a notebook cell cannot be reproduced by
+a judge.
+
+### APIs used
+
+- **OpenAI API** (`openai==1.66.5`) — the models actually driving runs: **gpt-5.6-terra**,
+  gpt-5.1, gpt-4o. Newer reasoning models refuse function tools on `/v1/chat/completions`,
+  so the adapter moves those models to `/v1/responses` rather than disabling reasoning.
+- **Anthropic API** (`anthropic==0.51.0`) — supported as an alternate primary; the internal
+  interface is the Anthropic Messages shape and OpenAI is adapted onto it.
+- **Google Gemini API** — configurable fallback, over stdlib `urllib` rather than a third SDK.
+
+Failover is deliberately narrow: auth or model-not-found disables a provider for the run,
+429/5xx fails over for one call, and it **never** fails over on a malformed proposal — that
+is the repair loop's job, and conflating the two would hide model-quality problems behind a
+provider switch. `summary.json` records which provider actually served every call.
+
+### Libraries and frameworks
+
+**Orchestrator:** pandas 2.2.3 · pyyaml 6.0.2 · matplotlib 3.10.0 (trajectory plot) ·
+pytest · ruff · the openai and anthropic SDKs.
+
+**Pipeline sandbox whitelist:** numpy 2.4.1 · scipy 1.17.0 (sparse matrices for wide linear
+and FM-style models) · pandas 2.3.3 · scikit-learn 1.8.0 (splitters, encoders, linear models,
+calibration) · **LightGBM 4.7.0** (GBDT, and `lambdarank` for listwise ranking) ·
+PyTorch 2.13.0.
+
+Versions are pinned and the prompt states what those major versions *removed*
+(`DataFrame.append`, `verbose_eval`, `early_stopping_rounds`), because six of eight
+iterations in our first live run died on exactly those APIs.
+
+### Datasets and assets
+
+- **KuaiRand-Pure** (Kuaishou), the required benchmark — 1,141,112 train / 124,909
+  validation / 170,588 test impressions, split by the organisers' date ranges. Used
+  unmodified; row counts verified against the published figures.
+- **The organisers' starter kit**, vendored under `vendor/starter_kit/` — its `baseline.py`
+  is run untouched to reproduce the official FM baseline, and its Chinese-language README
+  supplied the measured dead ends encoded in `orchestrator/ideas.yaml`.
+- **A synthetic rent-prediction fixture** (`tools/make_demo_data.py`) — continuous target,
+  no groups, RMSE, a different submission schema. Exists only to prove the orchestrator is
+  not KuaiRand-shaped.
+
+**No external training data of any kind.** That is the one disqualifying rule, and it is
+enforced rather than promised: generated pipelines run with outbound sockets blocked, so a
+pipeline that tried to download anything raises `NetworkBlocked` instead of succeeding
+quietly.
 
 ## What we would do next
 

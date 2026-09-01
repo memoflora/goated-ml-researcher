@@ -52,7 +52,7 @@ Two things make this worth leading with rather than burying:
 
 ## Status at handover
 
-- **Harness: verified.** 362 tests, lint clean, end-to-end proven on real data.
+- **Harness: verified.** 425 tests, lint clean, end-to-end proven on real data.
 - **Leak: closed**, with the fix measured rather than asserted.
 - **Legitimate score above baseline: not yet demonstrated.** Every number that beat 0.6016
   turned out to be leakage. The gpt-5.1 run in progress is the first on a leak-proof harness.
