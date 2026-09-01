@@ -1,0 +1,43 @@
+{
+ "run_id": "r20260901-0237",
+ "stop_reason": "converged",
+ "iterations": 12,
+ "max_iters": 12,
+ "best_node": "n009",
+ "best_metrics": {
+  "gauc": 0.639743219229573,
+  "ndcg@5": 0.5240518922807775,
+  "primary": 0.5818975557551753
+ },
+ "delta_vs_baseline": {
+  "gauc": -0.0277,
+  "ndcg@5": -0.0116,
+  "primary": -0.0197
+ },
+ "final_submission": "runs/r20260901-0237/final/submission.csv",
+ "final_valid": true,
+ "nodes": 12,
+ "dead_nodes": 1,
+ "tokens_in": 113266,
+ "tokens_out": 42730,
+ "tokens_total": 155996,
+ "llm_calls": 12,
+ "wall_s": 1285.912,
+ "exec_s": 847.356,
+ "providers": {
+  "openai:gpt-5.6-terra": {
+   "input_tokens": 34354,
+   "output_tokens": 42730,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 78912,
+   "tokens_in": 113266,
+   "tokens_out": 42730,
+   "calls": 12,
+   "disabled": false
+  }
+ },
+ "primary": "openai:gpt-5.6-terra",
+ "fallback": null,
+ "fallback_calls": 0,
+ "primary_dead": false
+}

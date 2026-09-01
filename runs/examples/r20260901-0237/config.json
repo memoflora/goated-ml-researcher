@@ -1,0 +1,44 @@
+{
+ "run_id": "r20260901-0237",
+ "mode": "dev",
+ "seed": 0,
+ "git_sha": "16571db249af1464563160d4e2236e6609618b0b",
+ "started_utc": "2026-09-01T02:37:32Z",
+ "components": {
+  "agent": "orchestrator.agent",
+  "sandbox": "orchestrator.sandbox",
+  "evaluator": "orchestrator.evaluate",
+  "knowledge": "orchestrator.knowledge",
+  "datacard": "orchestrator.datacard"
+ },
+ "subsample": 1.0,
+ "timeout_s": 600,
+ "final_seeds": [
+  0
+ ],
+ "token_budget": 2000000,
+ "task": {
+  "name": "kuairand-pure",
+  "data_dir": "/Users/nabilrakaizaabror/Documents/GitHub/goated-ml-researcher/data/KuaiRand-Pure/data",
+  "metrics": [
+   "gauc",
+   "ndcg@5"
+  ],
+  "baseline_val": {
+   "gauc": 0.6674,
+   "ndcg@5": 0.5357,
+   "primary": 0.6016
+  },
+  "baseline_test": {
+   "gauc": 0.661,
+   "ndcg@5": 0.5282,
+   "primary": 0.5946
+  },
+  "ceiling": 0.8645,
+  "max_iters": 12,
+  "wall_clock_s": 1800,
+  "conv_eps": 0.002,
+  "conv_n": 4,
+  "explore_after": 2
+ }
+}
