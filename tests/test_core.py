@@ -379,11 +379,16 @@ def test_kill_dash_nine_then_resume_loses_no_checkpointed_node(tmp_path):
                         os.kill(os.getpid(), 9)
                     return super().run(node, **kw)
 
+            # The probe is off for the same reason build() turns it off: it makes a
+            # second executor call per iteration, so `calls` stops being an iteration
+            # count and the killer fires in iteration 2 instead of 4. Crash-safety of
+            # the checkpoint is what this test is about, and the probe is orthogonal
+            # to it -- TestKillDuringProbe covers being killed inside the probe.
             Orchestrator(
                 stub_task(max_iters=10, wall_clock_s=600),
                 run_dir={str(run_dir)!r}, run_id="rkill",
                 agent=StubAgent(), executor=Killer(CLIMBING_SCRIPT),
-                evaluator=StubEvaluator(), mode="smoke",
+                evaluator=StubEvaluator(), mode="smoke", probe_test_path=False,
             ).run()
             """
         ),
@@ -410,6 +415,74 @@ def test_kill_dash_nine_then_resume_loses_no_checkpointed_node(tmp_path):
     assert set(resumed.tree.nodes) == {"n000", "n001", "n002"}
     summary = resumed.run()
     assert summary["iterations"] == 6 and summary["best_node"] is not None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="SIGKILL")
+def test_kill_inside_the_test_path_probe_leaves_a_resumable_checkpoint(tmp_path):
+    """The probe runs mid-iteration, so it widens the window a six-hour run can die in.
+
+    `checkpoint()` fires only after a whole iteration, which means a kill inside the
+    probe must lose the in-flight iteration and nothing before it. Nothing asserted
+    that until the probe was found to be doubling the executor calls in the SIGKILL
+    test above.
+    """
+    run_dir = tmp_path / "rprobe"
+    child = tmp_path / "child_probe.py"
+    child.write_text(
+        textwrap.dedent(
+            f"""
+            import os, sys
+            sys.path.insert(0, {str(REPO_ROOT)!r})
+            from orchestrator.core import Orchestrator
+            from tests.stubs import StubAgent, StubEvaluator, StubExecutor, stub_task
+            from tests.stubs.executor import CLIMBING_SCRIPT
+
+            class ProbeKiller(StubExecutor):
+                seen = 0
+
+                def run(self, node, **kw):
+                    if kw.get("split") == "test":
+                        ProbeKiller.seen += 1
+                        if ProbeKiller.seen >= 2:   # die inside iteration 2's probe
+                            os.kill(os.getpid(), 9)
+                    return super().run(node, **kw)
+
+            Orchestrator(
+                stub_task(max_iters=10, wall_clock_s=600),
+                run_dir={str(run_dir)!r}, run_id="rprobe",
+                agent=StubAgent(), executor=ProbeKiller(CLIMBING_SCRIPT),
+                evaluator=StubEvaluator(), mode="smoke", probe_test_path=True,
+            ).run()
+            """
+        ),
+        encoding="utf-8",
+    )
+    proc = subprocess.run([sys.executable, str(child)], capture_output=True, timeout=60, check=False)
+    assert proc.returncode == -9, "the child was supposed to be SIGKILLed inside the probe"
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    checkpointed = set(state["tree"]["nodes"])
+    assert state["iteration"] == 1, "iteration 1 completed, so it must be checkpointed"
+    assert checkpointed == {"n000"}, "a node killed mid-probe must not reach the tree"
+    assert all(
+        json.loads(line)
+        for line in (run_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines()
+    ), "a kill inside the probe tore the journal"
+
+    journal_mod.close()
+    resumed = Orchestrator.resume(
+        run_dir,
+        "rprobe",
+        agent=StubAgent(),
+        executor=StubExecutor(CLIMBING_SCRIPT),
+        evaluator=StubEvaluator(),
+        task=stub_task(max_iters=4, wall_clock_s=600),
+        journal=journal_mod.Journal(run_dir / "journal.jsonl", "rprobe", fsync=False),
+        probe_test_path=False,
+    )
+    assert set(resumed.tree.nodes) == checkpointed
+    summary = resumed.run()
+    assert summary["iterations"] == 4 and summary["best_node"] is not None
 
 
 def test_two_runs_in_the_same_minute_never_share_a_directory(tmp_path):
